@@ -1,4 +1,4 @@
-# Blender 4.2+ Extension Manifest
+# Blender 5.0+ Extension Manifest
 
 schema_version = "1.0.0"
 
@@ -6,11 +6,11 @@ id = "xarm_animation_workflow"
 name = "xArm Animation Workflow"
 version = "1.0.0"
 tagline = "Complete xArm robot animation workflow"
-maintainer = "Generated from standalone scripts"
+maintainer = "Wenyi"
 type = "add-on"
 
 # Supported Blender version
-blender_version_min = "4.2.0"
+blender_version_min = "5.0.1"
 
 # License
 license = ["SPDX:GPL-3.0-or-later"]

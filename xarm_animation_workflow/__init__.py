@@ -12,7 +12,7 @@ bl_info = {
     "name": "xArm Animation Workflow",
     "author": "Generated from standalone scripts",
     "description": "Complete xArm robot animation workflow: rig, export, playback",
-    "blender": (4, 2, 0),
+    "blender": (5, 0, 1),
     "version": (1, 0, 0),
     "category": "3D View",
     "location": "View3D > Sidebar > xArm Animation",
