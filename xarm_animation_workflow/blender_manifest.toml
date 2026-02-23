@@ -1,0 +1,21 @@
+# Blender 4.2+ Extension Manifest
+
+schema_version = "1.0.0"
+
+id = "xarm_animation_workflow"
+name = "xArm Animation Workflow"
+version = "1.0.0"
+tagline = "Complete xArm robot animation workflow"
+maintainer = "Generated from standalone scripts"
+type = "add-on"
+
+# Supported Blender version
+blender_version_min = "4.2.0"
+
+# License
+license = ["SPDX:GPL-3.0-or-later"]
+
+# Optional dependencies
+# xArm SDK is required for robot playback functionality
+# Install via: pip install xarm-python-sdk
+# (Already available in animaquinauf addon environment)
