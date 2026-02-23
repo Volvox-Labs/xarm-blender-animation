@@ -21,7 +21,7 @@ Blender addon for xArm/UFactory robot animation workflow.
 
 ## Quick Start
 
-1. **Setup**: Set source collection → Click "Setup Rig"
+1. **Setup**: Open `blender/Ufactory850-ani-workflow.blend` → Set source collection → Click "Setup Rig"
 2. **Animate**: Choose mode (FK/IK/Hybrid) → Keyframe bones
 3. **Export**: Click "Bake & Export CSV"
 4. **Play**: Set Robot IP → Select CSV → Play on Robot
