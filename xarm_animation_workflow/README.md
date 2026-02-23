@@ -11,8 +11,9 @@ Blender addon for xArm robot animation: rig setup, CSV export, and robot playbac
 ## Workflow
 
 ### 1. Setup Rig
-- Set source collection (e.g., `uf850_twin`)
-- Click **Setup Rig** to create animation armature
+1. Open `blender/Ufactory850-ani-workflow.blend` project file (contains pre-configured robot model)
+2. Set source collection (e.g., `uf850_twin`)
+3. Click **Setup Rig** to create animation armature
 
 ### 2. Animate
 Choose a mode in the panel:
