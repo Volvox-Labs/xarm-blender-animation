@@ -14,6 +14,16 @@ from typing import List, Dict, Optional, Callable
 class CSVPlayback:
     """Plays CSV animation on xArm robot."""
 
+    # Joint limits for clamping (with 0.1° buffer to avoid SDK edge case errors)
+    JOINT_LIMITS_DEG = [
+        (-360, 360),     # J1
+        (-131.9, 131.9), # J2
+        (-241.9, 3.4),   # J3
+        (-360, 360),     # J4
+        (-123.9, 123.9), # J5
+        (-360, 360),     # J6
+    ]
+
     def __init__(self, robot_ip: str, max_vel_deg_s: float = 180.0):
         """
         Initialize playback handler.
@@ -149,8 +159,15 @@ class CSVPlayback:
         return rows
 
     def _angles_from_row(self, row: Dict) -> List[float]:
-        """Extract joint angles from CSV row."""
-        return [float(row[f'j{i}_deg']) for i in range(1, 7)]
+        """Extract joint angles from CSV row, clamped to limits."""
+        angles = []
+        for i in range(1, 7):
+            angle = float(row[f'j{i}_deg'])
+            # Clamp to joint limits (handles floating point precision from CSV)
+            min_lim, max_lim = self.JOINT_LIMITS_DEG[i - 1]
+            angle = max(min_lim, min(max_lim, angle))
+            angles.append(angle)
+        return angles
 
     def _speed_deg_s(self, row: Dict) -> float:
         """Map speed_pct to deg/s for cued mode."""

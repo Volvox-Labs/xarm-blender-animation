@@ -14,12 +14,12 @@ class XArmRigConfig:
             'bone_names': ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
             'rotation_axes': ['Y', 'Z', '-Z', 'Y', 'Z', 'Y'],  # From animaquinauf/__init__.py:898
             'joint_limits_deg': [
-                (-360, 360),   # J1: ±360°
-                (-132, 132),   # J2: ±132° (-2.3038 to 2.3038 rad)
-                (-242, 3.5),   # J3: -242° to 3.5° (-4.2237 to 0.0611 rad)
-                (-360, 360),   # J4: ±360°
-                (-124, 124),   # J5: ±124° (-2.1642 to 2.1642 rad)
-                (-360, 360),   # J6: ±360°
+                (-360, 360),     # J1: ±360°
+                (-131.9, 131.9), # J2: ±132° (with 0.1° buffer for SDK)
+                (-241.9, 3.4),   # J3: -242° to 3.5° (with 0.1° buffer)
+                (-360, 360),     # J4: ±360°
+                (-123.9, 123.9), # J5: ±124° (with 0.1° buffer for SDK)
+                (-360, 360),     # J6: ±360°
             ],
             'max_velocity_deg_s': 180.0,  # 3.14 rad/s from URDF
         },
@@ -27,12 +27,12 @@ class XArmRigConfig:
             'bone_names': ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
             'rotation_axes': ['Y', '-Z', '-Z', 'Y', '-Z', 'Y'],  # From animaquinauf/__init__.py:896
             'joint_limits_deg': [
-                (-360, 360),   # J1
-                (-132, 132),   # J2
-                (-242, 3.5),   # J3
-                (-360, 360),   # J4
-                (-124, 124),   # J5
-                (-360, 360),   # J6
+                (-360, 360),     # J1
+                (-131.9, 131.9), # J2 (with 0.1° buffer)
+                (-241.9, 3.4),   # J3 (with 0.1° buffer)
+                (-360, 360),     # J4
+                (-123.9, 123.9), # J5 (with 0.1° buffer)
+                (-360, 360),     # J6
             ],
             'max_velocity_deg_s': 180.0,
         }

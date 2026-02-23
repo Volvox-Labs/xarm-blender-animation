@@ -84,28 +84,39 @@ class BoneAngleExtractor:
             angle_rad = bone.rotation_euler[axis_idx]
             angle_deg = math.degrees(angle_rad) * sign
 
+            # Round to 6 decimal places to avoid floating point precision issues
+            angle_deg = round(angle_deg, 6)
+
+            # Clamp to joint limits (handles values at boundaries)
+            # e.g., 124.0000001 → 124.0, -124.0000001 → -124.0
+            min_lim, max_lim = self.config.joint_limits_deg[i]
+            angle_deg = max(min_lim, min(max_lim, angle_deg))
+
             joint_angles.append(angle_deg)
 
         return joint_angles
 
-    def validate_limits(self, angles: List[float], frame: int) -> Tuple[bool, List[str]]:
+    def validate_limits(self, angles: List[float], frame: int, epsilon: float = 1e-6) -> Tuple[bool, List[str]]:
         """
         Check if joint angles are within limits.
 
         Args:
             angles: List of 6 joint angles in degrees
             frame: Frame number (for error messages)
+            epsilon: Tolerance for floating point comparison (default 1e-6)
 
         Returns:
             Tuple of (is_valid, error_messages)
-            - is_valid: True if all angles within limits
+            - is_valid: True if all angles within limits (inclusive, with epsilon tolerance)
             - error_messages: List of violation descriptions
         """
         is_valid = True
         errors = []
 
         for j, (angle, (min_lim, max_lim)) in enumerate(zip(angles, self.config.joint_limits_deg)):
-            if angle < min_lim or angle > max_lim:
+            # Use epsilon tolerance to handle floating point precision
+            # e.g., 124.0000001 should be considered equal to 124.0
+            if angle < (min_lim - epsilon) or angle > (max_lim + epsilon):
                 is_valid = False
                 errors.append(
                     f"Frame {frame}, J{j+1}: {angle:.2f}° exceeds limit [{min_lim:.1f}°, {max_lim:.1f}°]"
