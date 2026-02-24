@@ -97,7 +97,7 @@ def register():
     bpy.types.Scene.xarm_robot_ip = bpy.props.StringProperty(
         name="Robot IP",
         description="xArm robot IP address",
-        default="192.168.1.185"
+        default="localhost"
     )
 
     bpy.types.Scene.xarm_playback_mode = bpy.props.EnumProperty(
