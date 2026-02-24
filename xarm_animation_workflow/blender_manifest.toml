@@ -6,7 +6,7 @@ id = "xarm_animation_workflow"
 name = "xArm Animation Workflow"
 version = "1.0.0"
 tagline = "Complete xArm robot animation workflow"
-maintainer = "Wenyi"
+maintainer = "Generated from standalone scripts"
 type = "add-on"
 
 # Supported Blender version

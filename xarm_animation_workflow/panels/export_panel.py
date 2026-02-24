@@ -28,17 +28,17 @@ class XARM_PT_Export(bpy.types.Panel):
 
         col = box.column(align=True)
 
-        # Armature selection
-        if scene.xarm_rig_armature:
-            col.label(text=f"Armature: {scene.xarm_rig_armature.name}", icon='OUTLINER_OB_ARMATURE')
+        # Armature selector dropdown
+        col.prop(scene, 'xarm_active_rig', text='Export Rig')
 
+        arm = scene.xarm_active_rig
+        if arm and arm.name in bpy.data.objects:
             # Show robot type
-            robot_type = scene.xarm_rig_armature.get("xarm_robot_type", "uf850_twin")
+            robot_type = arm.get("xarm_robot_type", "uf850_twin")
             robot_label = "UF850" if robot_type == "uf850_twin" else "xArm6"
             col.label(text=f"Robot: {robot_label}", icon='ARMATURE_DATA')
         else:
-            col.label(text="No rig created yet", icon='ERROR')
-            col.label(text="Create rig in panel above")
+            col.label(text="Select rig to export", icon='INFO')
 
         # Export parameters
         col.separator()
@@ -52,14 +52,14 @@ class XARM_PT_Export(bpy.types.Panel):
         layout.separator()
         col = layout.column(align=True)
 
-        # Export operators (enabled only if rig exists)
-        if scene.xarm_rig_armature:
+        # Export operators (enabled only if rig selected)
+        if scene.xarm_active_rig and scene.xarm_active_rig.name in bpy.data.objects:
             col.operator('xarm.direct_export', text='Export CSV (No Bake)', icon='EXPORT')
             col.operator('xarm.bake_and_export', text='Bake & Export CSV', icon='RENDER_ANIMATION')
             col.separator()
             col.operator('xarm.clear_markers', text='Clear Violation Markers', icon='MARKER_HLT')
         else:
-            col.label(text="Create rig first to export", icon='INFO')
+            col.label(text="Select rig to export", icon='INFO')
 
         # ── Section 3: Robot Playback ──────────────────
         layout.separator()

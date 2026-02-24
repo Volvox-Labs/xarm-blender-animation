@@ -8,7 +8,10 @@ Blender addon for **UFactory 850** robot animation: rig setup, CSV export, and r
 2. Enable in Edit > Preferences > Add-ons
 3. Find panel: 3D View > Sidebar (N) > "xArm Animation"
 
-**For robot playback**: Copy the `xarm` library folder into Blender's Python lib folder (see main README for details).
+**For robot playback**: Copy the `xarm` library folder into Blender's Python lib folder:
+- Windows: `C:\Program Files\Blender Foundation\Blender 5.0\5.0\python\lib\`
+- macOS: `/Applications/Blender.app/Contents/Resources/5.0/python/lib/`
+- Linux: `/usr/share/blender/5.0/python/lib/`
 
 ## Workflow
 

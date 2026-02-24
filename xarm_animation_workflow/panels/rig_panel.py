@@ -44,70 +44,75 @@ class XARM_PT_RigSetup(bpy.types.Panel):
         op.widget_scale = scene.xarm_widget_scale
 
         # ── Section 2: Mode Control ──────────────────
-        # Only show if rig exists
-        if scene.xarm_rig_armature:
+        layout.separator()
+        box = layout.box()
+        box.label(text="Mode Control", icon='MODIFIER')
+
+        col = box.column(align=True)
+
+        # Armature selector dropdown
+        col.prop(scene, 'xarm_active_rig', text='Active Rig')
+
+        arm = scene.xarm_active_rig
+
+        if arm and arm.name in bpy.data.objects:
+            col.separator()
+
+            # Mode selector (expand=True for radio buttons)
+            col.prop(arm, 'xarm_mode', expand=True)
+
+            # IK rotation tracking toggle
+            col.separator()
+            col.prop(arm, 'xarm_ik_track_rotation', text="Track TCP Rotation", toggle=True)
+
+            # Status display
+            col.separator()
+            if "xarm_mode" in arm:
+                mode = int(arm["xarm_mode"])
+
+                # Bone visibility status
+                fk_coll = arm.data.collections.get("FK")
+                ik_coll = arm.data.collections.get("IK")
+                if fk_coll and ik_coll:
+                    fk_visible = fk_coll.is_visible
+                    ik_visible = ik_coll.is_visible
+                    col.label(text=f"FK: {'Visible' if fk_visible else 'Hidden'}, IK: {'Visible' if ik_visible else 'Hidden'}",
+                             icon='HIDE_OFF' if (fk_visible or ik_visible) else 'HIDE_ON')
+
+                # IK chain status
+                ik_bone = arm.pose.bones.get("joint_6_ik")
+                if ik_bone:
+                    ik_con = ik_bone.constraints.get("IK")
+                    if ik_con:
+                        col.label(text=f"IK Chain Length: {ik_con.chain_count}", icon='CONSTRAINT_BONE')
+
+                # Mode description
+                col.separator()
+                if mode == 0:
+                    col.label(text="Mode: Full FK", icon='ORIENTATION_LOCAL')
+                    col.label(text="→ Rotate blue FK bones manually")
+                elif mode == 1:
+                    col.label(text="Mode: Full IK", icon='CONSTRAINT')
+                    col.label(text="→ Move/rotate orange TCP target")
+                elif mode == 2:
+                    col.label(text="Mode: Hybrid (IK chain=4)", icon='CON_ROTLIKE')
+                    col.label(text="→ Rotate green J1-J2, move TCP")
+
+            # ── Utility Buttons ──────────────────
             layout.separator()
             box = layout.box()
-            box.label(text="Mode Control", icon='MODIFIER')
+            box.label(text="Utilities", icon='TOOL_SETTINGS')
 
-            arm = scene.xarm_rig_armature
+            col = box.column(align=True)
+            col.operator('xarm.reset_tcp', text='Reset TCP to Home', icon='HOME')
+            col.operator('xarm.clear_all_transforms', text='Clear All Transforms', icon='LOOP_BACK')
 
-            # Check if armature still exists in scene
-            if arm.name in bpy.data.objects:
-                col = box.column(align=True)
-
-                # Mode selector (expand=True for radio buttons)
-                col.prop(arm, 'xarm_mode', expand=True)
-
-                # IK rotation tracking toggle
-                col.separator()
-                col.prop(arm, 'xarm_ik_track_rotation', text="Track TCP Rotation", toggle=True)
-
-                # Status display
-                col.separator()
-                if "xarm_mode" in arm:
-                    mode = int(arm["xarm_mode"])
-
-                    # Bone visibility status
-                    fk_coll = arm.data.collections.get("FK")
-                    ik_coll = arm.data.collections.get("IK")
-                    if fk_coll and ik_coll:
-                        fk_visible = fk_coll.is_visible
-                        ik_visible = ik_coll.is_visible
-                        col.label(text=f"FK: {'Visible' if fk_visible else 'Hidden'}, IK: {'Visible' if ik_visible else 'Hidden'}",
-                                 icon='HIDE_OFF' if (fk_visible or ik_visible) else 'HIDE_ON')
-
-                    # IK chain status
-                    ik_bone = arm.pose.bones.get("joint_6_ik")
-                    if ik_bone:
-                        ik_con = ik_bone.constraints.get("IK")
-                        if ik_con:
-                            col.label(text=f"IK Chain Length: {ik_con.chain_count}", icon='CONSTRAINT_BONE')
-
-                    # Mode description
-                    col.separator()
-                    if mode == 0:
-                        col.label(text="Mode: Full FK", icon='ORIENTATION_LOCAL')
-                        col.label(text="→ Rotate blue FK bones manually")
-                    elif mode == 1:
-                        col.label(text="Mode: Full IK", icon='CONSTRAINT')
-                        col.label(text="→ Move/rotate orange TCP target")
-                    elif mode == 2:
-                        col.label(text="Mode: Hybrid (IK chain=4)", icon='CON_ROTLIKE')
-                        col.label(text="→ Rotate green J1-J2, move TCP")
-
-                # ── Utility Buttons ──────────────────
-                layout.separator()
-                box = layout.box()
-                box.label(text="Utilities", icon='TOOL_SETTINGS')
-
-                col = box.column(align=True)
-                col.operator('xarm.reset_tcp', text='Reset TCP to Home', icon='HOME')
-                col.operator('xarm.clear_all_transforms', text='Clear All Transforms', icon='LOOP_BACK')
-
-            else:
-                box.label(text="Armature reference invalid", icon='ERROR')
-                box.label(text="Delete and create new rig")
+        elif arm:
+            col.separator()
+            col.label(text="Armature reference invalid", icon='ERROR')
+        else:
+            col.separator()
+            col.label(text="Select a rig to control", icon='INFO')
 
 
 def register():

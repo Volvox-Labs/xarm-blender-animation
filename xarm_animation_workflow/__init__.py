@@ -85,6 +85,14 @@ def register():
         description="Created animation armature"
     )
 
+    # Active rig selector (for mode control and export)
+    bpy.types.Scene.xarm_active_rig = bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name="Active Rig",
+        description="Select armature for mode control and export",
+        poll=setup_rig.xarm_rig_poll
+    )
+
     # ── Robot playback properties ──────────
     bpy.types.Scene.xarm_robot_ip = bpy.props.StringProperty(
         name="Robot IP",
@@ -187,6 +195,7 @@ def unregister():
     del bpy.types.Scene.xarm_robot_ip
     del bpy.types.Object.xarm_ik_track_rotation
     del bpy.types.Object.xarm_mode
+    del bpy.types.Scene.xarm_active_rig
     del bpy.types.Scene.xarm_rig_armature
     del bpy.types.Scene.xarm_widget_scale
     del bpy.types.Scene.xarm_ik_chain_default

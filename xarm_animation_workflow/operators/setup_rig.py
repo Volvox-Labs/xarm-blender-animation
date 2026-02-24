@@ -8,6 +8,16 @@ Converts blender/scripts/setup_animation_rig.py into operator with UI parameters
 import bpy
 import math
 
+
+# ─────────────────────────────────────────────
+# POLL FUNCTIONS
+# ─────────────────────────────────────────────
+
+def xarm_rig_poll(self, obj):
+    """Filter for armatures with xarm_robot_type property (created by Setup Rig)."""
+    return obj.type == 'ARMATURE' and obj.get("xarm_robot_type") is not None
+
+
 # ─────────────────────────────────────────────
 # WIDGET HELPERS
 # ─────────────────────────────────────────────
@@ -692,6 +702,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
 
         # ── Save reference in scene for later operators ──────
         context.scene.xarm_rig_armature = anim_obj
+        context.scene.xarm_active_rig = anim_obj  # Auto-select new rig
 
         # ── Done ──────────────────────────────────
         print()

@@ -199,12 +199,12 @@ class XARM_OT_DirectExport(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         """Only available if rig armature is set"""
-        return context.scene.xarm_rig_armature is not None
+        return context.scene.xarm_active_rig is not None
 
     def invoke(self, context, event):
         """Open file dialog"""
         # Pre-fill filepath with default name
-        armature = context.scene.xarm_rig_armature
+        armature = context.scene.xarm_active_rig
         if armature:
             default_name = f"{armature.name}_export.csv"
             self.filepath = bpy.path.abspath(f"//{default_name}")
@@ -230,7 +230,7 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         layout = self.layout
 
         # Action selection dropdown
-        armature = context.scene.xarm_rig_armature
+        armature = context.scene.xarm_active_rig
         if armature:
             box = layout.box()
             box.label(text="Animation Action", icon='ACTION')
@@ -260,7 +260,7 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         original_action = None
         try:
             # Get armature
-            armature = context.scene.xarm_rig_armature
+            armature = context.scene.xarm_active_rig
             if not armature:
                 self.report({'ERROR'}, "No armature set. Create rig first.")
                 return {'CANCELLED'}
@@ -455,12 +455,12 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         """Only available if rig armature is set"""
-        return context.scene.xarm_rig_armature is not None
+        return context.scene.xarm_active_rig is not None
 
     def invoke(self, context, event):
         """Open file dialog"""
         # Pre-fill filepath with default name
-        armature = context.scene.xarm_rig_armature
+        armature = context.scene.xarm_active_rig
         if armature:
             default_name = f"{armature.name}_baked.csv"
             self.filepath = bpy.path.abspath(f"//{default_name}")
@@ -486,7 +486,7 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         layout = self.layout
 
         # Action selection dropdown
-        armature = context.scene.xarm_rig_armature
+        armature = context.scene.xarm_active_rig
         if armature:
             box = layout.box()
             box.label(text="Animation Action", icon='ACTION')
@@ -519,7 +519,7 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         original_active_object = None
         try:
             # Get armature
-            armature = context.scene.xarm_rig_armature
+            armature = context.scene.xarm_active_rig
             if not armature:
                 self.report({'ERROR'}, "No armature set. Create rig first.")
                 return {'CANCELLED'}
