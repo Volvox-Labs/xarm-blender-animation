@@ -85,12 +85,12 @@ def register():
         description="Created animation armature"
     )
 
-    # Active rig selector (for mode control and export)
-    bpy.types.Scene.xarm_active_rig = bpy.props.PointerProperty(
-        type=bpy.types.Object,
-        name="Active Rig",
-        description="Select armature for mode control and export",
-        poll=setup_rig.xarm_rig_poll
+    # Active collection selector (for mode control and export)
+    # The armature is automatically found within the selected collection
+    bpy.types.Scene.xarm_active_collection = bpy.props.PointerProperty(
+        type=bpy.types.Collection,
+        name="Active Collection",
+        description="Select collection containing the animation rig"
     )
 
     # ── Robot playback properties ──────────
@@ -127,6 +127,16 @@ def register():
         name="Playback CSV",
         description="Selected CSV file for robot playback",
         default=""
+    )
+
+    # ── Export settings ──────────
+    bpy.types.Scene.xarm_speed_warning_threshold = bpy.props.FloatProperty(
+        name="Speed Warning %",
+        description="Warn when joint speed exceeds this percentage of max (180 deg/s)",
+        default=90.0,
+        min=50.0,
+        max=100.0,
+        subtype='PERCENTAGE'
     )
 
     # ── Object properties (per-armature settings) ──────────
@@ -188,6 +198,7 @@ def unregister():
     bpy.utils.unregister_class(setup_rig.XARM_OT_SetupRig)
 
     # Delete properties
+    del bpy.types.Scene.xarm_speed_warning_threshold
     del bpy.types.Scene.xarm_playback_csv_path
     del bpy.types.Scene.xarm_last_export_path
     del bpy.types.Scene.xarm_playback_loops
@@ -195,7 +206,7 @@ def unregister():
     del bpy.types.Scene.xarm_robot_ip
     del bpy.types.Object.xarm_ik_track_rotation
     del bpy.types.Object.xarm_mode
-    del bpy.types.Scene.xarm_active_rig
+    del bpy.types.Scene.xarm_active_collection
     del bpy.types.Scene.xarm_rig_armature
     del bpy.types.Scene.xarm_widget_scale
     del bpy.types.Scene.xarm_ik_chain_default

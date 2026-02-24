@@ -10,12 +10,27 @@ import math
 
 
 # ─────────────────────────────────────────────
-# POLL FUNCTIONS
+# HELPER FUNCTIONS
 # ─────────────────────────────────────────────
 
 def xarm_rig_poll(self, obj):
     """Filter for armatures with xarm_robot_type property (created by Setup Rig)."""
     return obj.type == 'ARMATURE' and obj.get("xarm_robot_type") is not None
+
+
+def get_armature_from_collection(collection):
+    """
+    Find the xArm animation armature within a collection.
+    Returns the first armature with 'xarm_robot_type' property, or None.
+    """
+    if collection is None:
+        return None
+
+    for obj in collection.objects:
+        if obj.type == 'ARMATURE' and obj.get("xarm_robot_type") is not None:
+            return obj
+
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -702,7 +717,10 @@ class XARM_OT_SetupRig(bpy.types.Operator):
 
         # ── Save reference in scene for later operators ──────
         context.scene.xarm_rig_armature = anim_obj
-        context.scene.xarm_active_rig = anim_obj  # Auto-select new rig
+        # Auto-select new collection (armature is found automatically)
+        out_coll = bpy.data.collections.get(self.output_collection_name)
+        if out_coll:
+            context.scene.xarm_active_collection = out_coll
 
         # ── Done ──────────────────────────────────
         print()

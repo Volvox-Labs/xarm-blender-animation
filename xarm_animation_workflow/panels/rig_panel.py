@@ -6,6 +6,8 @@ Provides UI for creating animation rigs and dynamically switching modes.
 
 import bpy
 
+from ..operators.setup_rig import get_armature_from_collection
+
 
 class XARM_PT_RigSetup(bpy.types.Panel):
     """Panel for rig setup and mode control"""
@@ -50,12 +52,14 @@ class XARM_PT_RigSetup(bpy.types.Panel):
 
         col = box.column(align=True)
 
-        # Armature selector dropdown
-        col.prop(scene, 'xarm_active_rig', text='Active Rig')
+        # Collection selector dropdown
+        col.prop(scene, 'xarm_active_collection', text='Rig Collection')
 
-        arm = scene.xarm_active_rig
+        # Get armature from selected collection
+        arm = get_armature_from_collection(scene.xarm_active_collection)
 
         if arm and arm.name in bpy.data.objects:
+            col.label(text=f"Armature: {arm.name}", icon='ARMATURE_DATA')
             col.separator()
 
             # Mode selector (expand=True for radio buttons)
@@ -107,12 +111,13 @@ class XARM_PT_RigSetup(bpy.types.Panel):
             col.operator('xarm.reset_tcp', text='Reset TCP to Home', icon='HOME')
             col.operator('xarm.clear_all_transforms', text='Clear All Transforms', icon='LOOP_BACK')
 
-        elif arm:
+        elif scene.xarm_active_collection:
             col.separator()
-            col.label(text="Armature reference invalid", icon='ERROR')
+            col.label(text="No armature found in collection", icon='ERROR')
+            col.label(text="(Collection needs xArm rig)")
         else:
             col.separator()
-            col.label(text="Select a rig to control", icon='INFO')
+            col.label(text="Select a rig collection", icon='INFO')
 
 
 def register():

@@ -7,6 +7,7 @@ Provides UI for exporting animations to CSV and playing on robot.
 import bpy
 
 from ..operators.play_csv import get_playback_status
+from ..operators.setup_rig import get_armature_from_collection
 
 
 class XARM_PT_Export(bpy.types.Panel):
@@ -28,17 +29,21 @@ class XARM_PT_Export(bpy.types.Panel):
 
         col = box.column(align=True)
 
-        # Armature selector dropdown
-        col.prop(scene, 'xarm_active_rig', text='Export Rig')
+        # Collection selector dropdown
+        col.prop(scene, 'xarm_active_collection', text='Rig Collection')
 
-        arm = scene.xarm_active_rig
+        # Get armature from selected collection
+        arm = get_armature_from_collection(scene.xarm_active_collection)
         if arm and arm.name in bpy.data.objects:
+            col.label(text=f"Armature: {arm.name}", icon='ARMATURE_DATA')
             # Show robot type
             robot_type = arm.get("xarm_robot_type", "uf850_twin")
             robot_label = "UF850" if robot_type == "uf850_twin" else "xArm6"
-            col.label(text=f"Robot: {robot_label}", icon='ARMATURE_DATA')
+            col.label(text=f"Robot: {robot_label}")
+        elif scene.xarm_active_collection:
+            col.label(text="No armature found in collection", icon='ERROR')
         else:
-            col.label(text="Select rig to export", icon='INFO')
+            col.label(text="Select rig collection to export", icon='INFO')
 
         # Export parameters
         col.separator()
@@ -48,18 +53,23 @@ class XARM_PT_Export(bpy.types.Panel):
         row.prop(scene, 'frame_start', text='Start')
         row.prop(scene, 'frame_end', text='End')
 
+        # Speed warning threshold
+        col.separator()
+        col.prop(scene, 'xarm_speed_warning_threshold', text='Speed Warn %')
+        col.label(text="(Max robot speed: 180 deg/s)", icon='INFO')
+
         # ── Section 2: Export Buttons ──────────────────
         layout.separator()
         col = layout.column(align=True)
 
-        # Export operators (enabled only if rig selected)
-        if scene.xarm_active_rig and scene.xarm_active_rig.name in bpy.data.objects:
+        # Export operators (enabled only if armature found in collection)
+        if arm and arm.name in bpy.data.objects:
             col.operator('xarm.direct_export', text='Export CSV (No Bake)', icon='EXPORT')
             col.operator('xarm.bake_and_export', text='Bake & Export CSV', icon='RENDER_ANIMATION')
             col.separator()
             col.operator('xarm.clear_markers', text='Clear Violation Markers', icon='MARKER_HLT')
         else:
-            col.label(text="Select rig to export", icon='INFO')
+            col.label(text="Select rig collection to export", icon='INFO')
 
         # ── Section 3: Robot Playback ──────────────────
         layout.separator()

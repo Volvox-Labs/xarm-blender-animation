@@ -13,6 +13,7 @@ from typing import Tuple, List, Dict, Set
 from ..core.robot_config import XArmRigConfig
 from ..core.bone_utils import BoneAngleExtractor
 from ..core.csv_export import SpeedCalculator, CSVExporter
+from .setup_rig import get_armature_from_collection
 
 
 # ─────────────────────────────────────────────────────────────
@@ -50,11 +51,17 @@ class XARM_OT_ExportReport(bpy.types.Operator):
 
         layout.separator()
 
+        # Max speed info
+        max_speed = data.get('max_speed_pct', 0)
+        if max_speed > 0:
+            box = layout.box()
+            box.label(text=f"Peak Speed: {max_speed:.1f}% of max (180 deg/s)", icon='SORTTIME')
+
         # Speed violations
         speed_frames = data.get('speed_frames', {})
         if speed_frames:
             box = layout.box()
-            box.label(text=f"Speed Violations ({len(speed_frames)} frames)", icon='SORTTIME')
+            box.label(text=f"Speed Violations ({len(speed_frames)} frames)", icon='ERROR')
 
             col = box.column(align=True)
             # Show first 10 frames with details
@@ -198,13 +205,14 @@ class XARM_OT_DirectExport(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        """Only available if rig armature is set"""
-        return context.scene.xarm_active_rig is not None
+        """Only available if rig armature found in collection"""
+        arm = get_armature_from_collection(context.scene.xarm_active_collection)
+        return arm is not None
 
     def invoke(self, context, event):
         """Open file dialog"""
         # Pre-fill filepath with default name
-        armature = context.scene.xarm_active_rig
+        armature = get_armature_from_collection(context.scene.xarm_active_collection)
         if armature:
             default_name = f"{armature.name}_export.csv"
             self.filepath = bpy.path.abspath(f"//{default_name}")
@@ -230,7 +238,7 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         layout = self.layout
 
         # Action selection dropdown
-        armature = context.scene.xarm_active_rig
+        armature = get_armature_from_collection(context.scene.xarm_active_collection)
         if armature:
             box = layout.box()
             box.label(text="Animation Action", icon='ACTION')
@@ -259,10 +267,10 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         """Export animation to CSV"""
         original_action = None
         try:
-            # Get armature
-            armature = context.scene.xarm_active_rig
+            # Get armature from collection
+            armature = get_armature_from_collection(context.scene.xarm_active_collection)
             if not armature:
-                self.report({'ERROR'}, "No armature set. Create rig first.")
+                self.report({'ERROR'}, "No armature found in collection. Select a rig collection.")
                 return {'CANCELLED'}
 
             # Ensure animation_data exists
@@ -315,6 +323,10 @@ class XARM_OT_DirectExport(bpy.types.Operator):
             speed_frames: Dict[int, List] = {}  # frame -> [(joint_idx, velocity), ...]
             limit_frames: Dict[int, List] = {}  # frame -> [error_msg, ...]
             prev_angles = None
+            max_speed_pct = 0.0  # Track peak speed
+
+            # Get warning threshold from scene (default 90%)
+            warning_threshold = context.scene.get('xarm_speed_warning_threshold', 90.0) / 100.0
 
             for frame in range(start_frame, end_frame + 1):
                 # Get joint angles
@@ -332,8 +344,12 @@ class XARM_OT_DirectExport(bpy.types.Operator):
                 else:
                     speed_pct, velocities = speed_calc.calculate_speed(prev_angles, angles)
 
-                    # Check for speed violations (>80% of max)
-                    threshold_vel = config.max_velocity_deg_s * 0.8
+                    # Track max speed (uncapped)
+                    actual_pct = (max(velocities) / config.max_velocity_deg_s) * 100.0
+                    max_speed_pct = max(max_speed_pct, actual_pct)
+
+                    # Check for speed violations (using scene threshold)
+                    threshold_vel = config.max_velocity_deg_s * warning_threshold
                     violations = []
                     for j, vel in enumerate(velocities):
                         if vel > threshold_vel:
@@ -360,6 +376,7 @@ class XARM_OT_DirectExport(bpy.types.Operator):
                 'filepath': os.path.basename(self.filepath),
                 'num_frames': num_frames,
                 'fps': self.fps,
+                'max_speed_pct': max_speed_pct,
                 'speed_frames': speed_frames,
                 'limit_frames': limit_frames,
                 'has_warnings': bool(speed_frames),
@@ -454,13 +471,14 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        """Only available if rig armature is set"""
-        return context.scene.xarm_active_rig is not None
+        """Only available if rig armature found in collection"""
+        arm = get_armature_from_collection(context.scene.xarm_active_collection)
+        return arm is not None
 
     def invoke(self, context, event):
         """Open file dialog"""
         # Pre-fill filepath with default name
-        armature = context.scene.xarm_active_rig
+        armature = get_armature_from_collection(context.scene.xarm_active_collection)
         if armature:
             default_name = f"{armature.name}_baked.csv"
             self.filepath = bpy.path.abspath(f"//{default_name}")
@@ -486,7 +504,7 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         layout = self.layout
 
         # Action selection dropdown
-        armature = context.scene.xarm_active_rig
+        armature = get_armature_from_collection(context.scene.xarm_active_collection)
         if armature:
             box = layout.box()
             box.label(text="Animation Action", icon='ACTION')
@@ -518,10 +536,10 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         original_action = None
         original_active_object = None
         try:
-            # Get armature
-            armature = context.scene.xarm_active_rig
+            # Get armature from collection
+            armature = get_armature_from_collection(context.scene.xarm_active_collection)
             if not armature:
-                self.report({'ERROR'}, "No armature set. Create rig first.")
+                self.report({'ERROR'}, "No armature found in collection. Select a rig collection.")
                 return {'CANCELLED'}
 
             # Ensure animation_data exists
@@ -625,6 +643,10 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             speed_frames: Dict[int, List] = {}  # frame -> [(joint_idx, velocity), ...]
             limit_frames: Dict[int, List] = {}  # frame -> [error_msg, ...]
             prev_angles = None
+            max_speed_pct = 0.0  # Track peak speed
+
+            # Get warning threshold from scene (default 90%)
+            warning_threshold = context.scene.get('xarm_speed_warning_threshold', 90.0) / 100.0
 
             for frame in range(start_frame, end_frame + 1):
                 # Get joint angles
@@ -642,8 +664,12 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
                 else:
                     speed_pct, velocities = speed_calc.calculate_speed(prev_angles, angles)
 
-                    # Check for speed violations (>80% of max)
-                    threshold_vel = config.max_velocity_deg_s * 0.8
+                    # Track max speed (uncapped)
+                    actual_pct = (max(velocities) / config.max_velocity_deg_s) * 100.0
+                    max_speed_pct = max(max_speed_pct, actual_pct)
+
+                    # Check for speed violations (using scene threshold)
+                    threshold_vel = config.max_velocity_deg_s * warning_threshold
                     violations = []
                     for j, vel in enumerate(velocities):
                         if vel > threshold_vel:
@@ -678,6 +704,7 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
                 'filepath': os.path.basename(self.filepath),
                 'num_frames': num_frames,
                 'fps': self.fps,
+                'max_speed_pct': max_speed_pct,
                 'speed_frames': speed_frames,
                 'limit_frames': limit_frames,
                 'has_warnings': bool(speed_frames),
