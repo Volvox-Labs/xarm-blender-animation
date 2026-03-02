@@ -69,6 +69,24 @@ class XARM_PT_RigSetup(bpy.types.Panel):
             col.separator()
             col.prop(arm, 'xarm_ik_track_rotation', text="Track TCP Rotation", toggle=True)
 
+            # ── Base Transform Controls ──────────────────
+            # Find base object in selected collection (contains '_base')
+            # Handles Blender auto-numbering: uf850_ani_base, uf850_ani_base.001, etc.
+            collection = scene.xarm_active_collection
+            base_obj = None
+            if collection:
+                for obj in collection.objects:
+                    if '_base' in obj.name:
+                        base_obj = obj
+                        break
+
+            # Display base object transform
+            if base_obj:
+                col.separator()
+                col.label(text="Base Transform", icon='EMPTY_AXIS')
+                col.prop(base_obj, 'location', text='Position')
+                col.prop(base_obj, 'rotation_euler', text='Rotation')
+
             # Status display
             col.separator()
             if "xarm_mode" in arm:
@@ -110,6 +128,8 @@ class XARM_PT_RigSetup(bpy.types.Panel):
             col = box.column(align=True)
             col.operator('xarm.reset_tcp', text='Reset TCP to Home', icon='HOME')
             col.operator('xarm.clear_all_transforms', text='Clear All Transforms', icon='LOOP_BACK')
+            col.separator()
+            col.operator('xarm.refresh_widgets', text='Refresh Control Widgets', icon='OUTLINER_OB_ARMATURE')
 
         elif scene.xarm_active_collection:
             col.separator()

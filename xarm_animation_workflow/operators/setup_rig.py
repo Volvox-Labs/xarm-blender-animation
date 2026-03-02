@@ -53,14 +53,23 @@ def _widget_collection():
 
 
 def _make_widget(name, verts, edges):
-    """Create or replace widget mesh object."""
-    old = bpy.data.objects.get(name)
-    if old:
-        bpy.data.objects.remove(old, do_unlink=True)
+    """Get or create widget mesh - reuse if exists."""
+    # Check if widget already exists in the widget collection
+    existing = bpy.data.objects.get(name)
+    if existing and existing.name in _widget_collection().objects:
+        return existing  # REUSE existing widget (don't delete)
+
+    # Create new widget only if doesn't exist
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, edges, [])
+    mesh.update()
+
     obj = bpy.data.objects.new(name, mesh)
     _widget_collection().objects.link(obj)
+    obj.hide_viewport = True
+    obj.hide_render = True
+    obj.use_fake_user = True
+
     return obj
 
 
@@ -388,7 +397,18 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         if anim_obj is None:
             self.report({'ERROR'}, "Armature not found after duplication")
             return {'CANCELLED'}
-        print(f"[INFO]  Armature: '{anim_obj.name}'")
+
+        # ── 8b. Rename armature based on collection name ────
+        collection_name = self.output_collection_name
+        # Pattern: "animation01" → "armature01"
+        if "animation" in collection_name.lower():
+            armature_name = collection_name.replace("animation", "armature").replace("Animation", "Armature")
+        else:
+            # Fallback for non-standard collection names
+            armature_name = f"{collection_name}_armature"
+
+        anim_obj.name = armature_name
+        print(f"[INFO]  Armature renamed: '{armature_name}'")
 
         expected = [f'joint_{i}' for i in range(1, 7)] + ['tcp']
         missing = [b for b in expected if b not in anim_obj.pose.bones]
@@ -819,4 +839,82 @@ class XARM_OT_ClearAllTransforms(bpy.types.Operator):
 
         self.report({'INFO'}, f"Cleared transforms from {cleared_count} bones")
         print(f"[xArm] Cleared transforms from {cleared_count} control bones")
+        return {'FINISHED'}
+
+
+class XARM_OT_RefreshWidgets(bpy.types.Operator):
+    """Check and re-apply control widget shapes if missing"""
+    bl_idname = "xarm.refresh_widgets"
+    bl_label = "Refresh Control Widgets"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        """Only available if collection is selected"""
+        scene = context.scene
+        collection = scene.xarm_active_collection
+        if not collection:
+            return False
+        # Check if armature exists in collection
+        arm = get_armature_from_collection(collection)
+        return arm is not None
+
+    def execute(self, context):
+        scene = context.scene
+        collection = scene.xarm_active_collection
+        arm = get_armature_from_collection(collection)
+
+        if not arm:
+            self.report({'ERROR'}, "No armature found in selected collection")
+            return {'CANCELLED'}
+
+        pbones = arm.pose.bones
+        widget_scale = scene.xarm_widget_scale
+        ring_axes = ['Y', 'Z', 'Z', 'Y', 'Z', 'Y']
+
+        refreshed_count = 0
+
+        # FK bones: blue rings (joint_1_fk to joint_6_fk)
+        for i in range(1, 7):
+            bone_name = f'joint_{i}_fk'
+            if bone_name in pbones:
+                pb = pbones[bone_name]
+                # Check if widget is missing
+                if pb.custom_shape is None or pb.custom_shape.name not in bpy.data.objects:
+                    pb.custom_shape = _circle(f'WGT_joint_{i}_fk', axis=ring_axes[i-1])
+                    pb.use_custom_shape_bone_size = False
+                    pb.custom_shape_scale_xyz = (widget_scale, widget_scale, widget_scale)
+                    pb.color.palette = 'THEME04'  # Blue
+                    refreshed_count += 1
+
+        # IK manual bones: green rings (joint_1_ik, joint_2_ik)
+        for i in range(1, 3):
+            bone_name = f'joint_{i}_ik'
+            if bone_name in pbones:
+                pb = pbones[bone_name]
+                if pb.custom_shape is None or pb.custom_shape.name not in bpy.data.objects:
+                    pb.custom_shape = _circle(f'WGT_joint_{i}_ik', axis=ring_axes[i-1])
+                    pb.use_custom_shape_bone_size = False
+                    pb.custom_shape_scale_xyz = (widget_scale, widget_scale, widget_scale)
+                    pb.color.palette = 'THEME03'  # Green
+                    refreshed_count += 1
+
+        # TCP: orange cross
+        if 'tcp' in pbones:
+            tcp_pb = pbones['tcp']
+            if tcp_pb.custom_shape is None or tcp_pb.custom_shape.name not in bpy.data.objects:
+                tcp_pb.custom_shape = _cross('WGT_tcp')
+                tcp_pb.use_custom_shape_bone_size = False
+                tcp_scale = widget_scale * 1.5
+                tcp_pb.custom_shape_scale_xyz = (tcp_scale, tcp_scale, tcp_scale)
+                tcp_pb.color.palette = 'THEME09'  # Orange
+                refreshed_count += 1
+
+        if refreshed_count > 0:
+            self.report({'INFO'}, f"Refreshed {refreshed_count} control widgets")
+            print(f"[xArm] Refreshed {refreshed_count} control widgets on '{arm.name}'")
+        else:
+            self.report({'INFO'}, "All widgets are already present")
+            print(f"[xArm] All widgets already present on '{arm.name}'")
+
         return {'FINISHED'}
