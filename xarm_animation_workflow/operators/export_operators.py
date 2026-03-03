@@ -8,7 +8,10 @@ Provides operators for exporting animations to CSV format.
 
 import bpy
 import os
-from typing import Tuple, List, Dict, Set
+import json
+import math
+from datetime import datetime
+from typing import Tuple, List, Dict, Set, Optional, Any
 
 from ..core.robot_config import XArmRigConfig
 from ..core.bone_utils import BoneAngleExtractor
@@ -137,6 +140,197 @@ def add_violation_markers(context, speed_frames: Dict[int, List], limit_frames: 
     total = len(speed_frames) + len(set(limit_frames) - set(speed_frames))
     if total > 0:
         print(f"[INFO] Added {total} violation markers to timeline")
+
+
+def _sanitize_name(name: str, fallback: str = "scene_export") -> str:
+    """Sanitize names for folders/files."""
+    safe = "".join(c if c.isalnum() or c in ("_", "-", ".") else "_" for c in name.strip())
+    safe = safe.strip("_.")
+    return safe or fallback
+
+
+def _find_robot_root_object(collection: bpy.types.Collection, armature: bpy.types.Object) -> bpy.types.Object:
+    """Prefer base object for transform metadata, fallback to armature."""
+    for obj in collection.objects:
+        if "_base" in obj.name:
+            return obj
+    return armature
+
+
+def _get_transform_xyz(obj: bpy.types.Object) -> Tuple[List[float], List[float]]:
+    """Extract world transform as translate and rotateXYZ (degrees)."""
+    loc = obj.matrix_world.to_translation()
+    rot = obj.matrix_world.to_euler('XYZ')
+
+    translate = [float(loc.x), float(loc.y), float(loc.z)]
+    rotate_xyz = [
+        float(math.degrees(float(rot.x))),
+        float(math.degrees(float(rot.y))),
+        float(math.degrees(float(rot.z))),
+    ]
+    return translate, rotate_xyz
+
+
+def _export_armature_action_to_csv(
+    armature: bpy.types.Object,
+    filepath: str,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    max_speed_pct: float,
+    warning_threshold: float,
+) -> Dict[str, Any]:
+    """Export currently active armature action to CSV and return summary."""
+    if not armature.animation_data or not armature.animation_data.action:
+        raise ValueError(f"Armature '{armature.name}' has no active action")
+
+    robot_type = armature.get("xarm_robot_type", "uf850_twin")
+    config = XArmRigConfig(robot_type)
+
+    extractor = BoneAngleExtractor(armature.name, config)
+    speed_calc = SpeedCalculator(
+        max_velocity_deg_s=config.max_velocity_deg_s,
+        fps=fps,
+        max_speed_override=max_speed_pct,
+    )
+    exporter = CSVExporter(filepath, include_tcp=False)
+
+    speed_frames: Dict[int, List] = {}
+    limit_frames: Dict[int, List] = {}
+    prev_angles = None
+    max_observed_speed_pct = 0.0
+
+    for frame in range(start_frame, end_frame + 1):
+        angles = extractor.get_joint_angles(frame)
+
+        is_valid, errors = extractor.validate_limits(angles, frame)
+        if not is_valid:
+            limit_frames[frame] = errors
+
+        if prev_angles is None:
+            speed_pct = 0.0
+            velocities = [0.0] * 6
+        else:
+            speed_pct, velocities = speed_calc.calculate_speed(prev_angles, angles)
+
+            actual_pct = (max(velocities) / config.max_velocity_deg_s) * 100.0
+            max_observed_speed_pct = max(max_observed_speed_pct, actual_pct)
+
+            threshold_vel = config.max_velocity_deg_s * warning_threshold
+            violations = []
+            for j, vel in enumerate(velocities):
+                if vel > threshold_vel:
+                    violations.append((j, vel))
+            if violations:
+                speed_frames[frame] = violations
+
+        time_s = (frame - start_frame) / fps
+        exporter.add_frame(frame, time_s, angles, speed_pct)
+        prev_angles = angles
+
+    exporter.write()
+
+    return {
+        "num_frames": end_frame - start_frame + 1,
+        "speed_frames": speed_frames,
+        "limit_frames": limit_frames,
+        "max_speed_pct": max_observed_speed_pct,
+        "action_name": armature.animation_data.action.name,
+        "robot_type": robot_type,
+    }
+
+
+class XARM_PG_SceneRobotSlot(bpy.types.PropertyGroup):
+    """One robot entry in scene-level export."""
+    robot_id: bpy.props.StringProperty(
+        name="Robot ID",
+        description="Unique robot identifier in scene metadata",
+        default="robot1",
+    )
+    collection: bpy.props.PointerProperty(
+        type=bpy.types.Collection,
+        name="Rig Collection",
+        description="Collection containing one xArm animation rig",
+    )
+
+
+class XARM_OT_AddSceneRobotSlot(bpy.types.Operator):
+    """Add a robot slot for scene export."""
+    bl_idname = "xarm.add_scene_robot_slot"
+    bl_label = "Add Robot Slot"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        slot = scene.xarm_scene_export_slots.add()
+        slot.robot_id = f"robot{len(scene.xarm_scene_export_slots)}"
+        if scene.xarm_active_collection:
+            slot.collection = scene.xarm_active_collection
+        scene.xarm_scene_export_active_slot = max(0, len(scene.xarm_scene_export_slots) - 1)
+        self.report({'INFO'}, "Added robot export slot")
+        return {'FINISHED'}
+
+
+class XARM_OT_RemoveSceneRobotSlot(bpy.types.Operator):
+    """Remove one robot slot from scene export list."""
+    bl_idname = "xarm.remove_scene_robot_slot"
+    bl_label = "Remove Robot Slot"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        scene = context.scene
+        slots = scene.xarm_scene_export_slots
+
+        if self.index < 0 or self.index >= len(slots):
+            self.report({'ERROR'}, "Invalid slot index")
+            return {'CANCELLED'}
+
+        slots.remove(self.index)
+
+        if len(slots) == 0:
+            scene.xarm_scene_export_active_slot = 0
+        else:
+            scene.xarm_scene_export_active_slot = min(scene.xarm_scene_export_active_slot, len(slots) - 1)
+
+        self.report({'INFO'}, "Removed robot export slot")
+        return {'FINISHED'}
+
+
+class XARM_OT_SelectSceneExportDir(bpy.types.Operator):
+    """Select folder for scene export bundle."""
+    bl_idname = "xarm.select_scene_export_dir"
+    bl_label = "Select Scene Export Folder"
+    bl_options = {'REGISTER'}
+
+    filepath: bpy.props.StringProperty(
+        name="Folder",
+        description="Folder used as root for scene export bundles",
+        subtype='DIR_PATH',
+    )
+
+    def invoke(self, context, event):
+        scene = context.scene
+        if scene.xarm_scene_export_dir:
+            self.filepath = scene.xarm_scene_export_dir
+        else:
+            self.filepath = bpy.path.abspath("//")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        selected = bpy.path.abspath(self.filepath)
+        if not selected:
+            self.report({'ERROR'}, "No folder selected")
+            return {'CANCELLED'}
+
+        if os.path.isfile(selected):
+            selected = os.path.dirname(selected)
+
+        context.scene.xarm_scene_export_dir = selected
+        self.report({'INFO'}, f"Scene export folder set: {selected}")
+        return {'FINISHED'}
 
 
 class XARM_OT_ClearMarkers(bpy.types.Operator):
@@ -764,3 +958,159 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             # Restore original active object
             if original_active_object and original_active_object.name in bpy.data.objects:
                 context.view_layer.objects.active = original_active_object
+
+
+class XARM_OT_ExportSceneBundle(bpy.types.Operator):
+    """Export a scene bundle with metadata JSON and one CSV per robot."""
+    bl_idname = "xarm.export_scene_bundle"
+    bl_label = "Export Scene Bundle"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        return len(scene.xarm_scene_export_slots) > 0
+
+    def execute(self, context):
+        scene = context.scene
+        slots = scene.xarm_scene_export_slots
+
+        if not slots:
+            self.report({'ERROR'}, "Add at least one robot slot for scene export")
+            return {'CANCELLED'}
+
+        scene_name = scene.xarm_scene_export_name.strip() or scene.name
+        root_dir = scene.xarm_scene_export_dir.strip() if scene.xarm_scene_export_dir else bpy.path.abspath("//")
+        root_dir = bpy.path.abspath(root_dir)
+        bundle_dir = os.path.join(root_dir, _sanitize_name(scene_name, fallback=_sanitize_name(scene.name)))
+        csv_dir = os.path.join(bundle_dir, "csv")
+
+        try:
+            os.makedirs(csv_dir, exist_ok=True)
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to create export folder: {e}")
+            return {'CANCELLED'}
+
+        start_frame = scene.frame_start
+        end_frame = scene.frame_end
+        if start_frame > end_frame:
+            self.report({'ERROR'}, f"Invalid frame range: {start_frame} to {end_frame}")
+            return {'CANCELLED'}
+
+        fps = float(scene.render.fps)
+        max_speed_pct = 50.0
+        warning_threshold = scene.xarm_speed_warning_threshold / 100.0
+
+        used_file_names: Set[str] = set()
+        metadata_robots: List[Dict[str, Any]] = []
+        skipped: List[str] = []
+        first_csv_export_path: Optional[str] = None
+
+        for index, slot in enumerate(slots, start=1):
+            robot_id = slot.robot_id.strip() or f"robot{index}"
+            safe_robot = _sanitize_name(robot_id, fallback=f"robot{index}")
+            collection = slot.collection
+
+            if not collection:
+                skipped.append(f"{robot_id}: no collection selected")
+                continue
+
+            armature = get_armature_from_collection(collection)
+            if armature is None:
+                skipped.append(f"{robot_id}: no xArm rig armature in collection '{collection.name}'")
+                continue
+
+            if not armature.animation_data or not armature.animation_data.action:
+                skipped.append(f"{robot_id}: armature '{armature.name}' has no active action")
+                continue
+
+            base_name = safe_robot
+            suffix = 1
+            while base_name in used_file_names:
+                suffix += 1
+                base_name = f"{safe_robot}_{suffix}"
+            used_file_names.add(base_name)
+
+            csv_filename = f"{base_name}.csv"
+            csv_path = os.path.join(csv_dir, csv_filename)
+            if first_csv_export_path is None:
+                first_csv_export_path = csv_path
+
+            try:
+                export_summary = _export_armature_action_to_csv(
+                    armature=armature,
+                    filepath=csv_path,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    fps=fps,
+                    max_speed_pct=max_speed_pct,
+                    warning_threshold=warning_threshold,
+                )
+            except Exception as e:
+                skipped.append(f"{robot_id}: export failed ({e})")
+                continue
+
+            root_obj = _find_robot_root_object(collection, armature)
+            translate, rotate_xyz = _get_transform_xyz(root_obj)
+            rel_csv_path = os.path.join("csv", csv_filename).replace("\\", "/")
+
+            metadata_robots.append({
+                "id": robot_id,
+                "collection": collection.name,
+                "armature": armature.name,
+                "transform": {
+                    "rotateXYZ": rotate_xyz,
+                    "translate": translate,
+                },
+                "animation": {
+                    "path": rel_csv_path,
+                    "length_frames": export_summary["num_frames"],
+                    "fps": fps,
+                    "action": export_summary["action_name"],
+                },
+                "validation": {
+                    "speed_warning_frames": len(export_summary["speed_frames"]),
+                    "joint_limit_violation_frames": len(export_summary["limit_frames"]),
+                    "peak_speed_percent": round(float(export_summary["max_speed_pct"]), 3),
+                },
+            })
+
+        if not metadata_robots:
+            self.report({'ERROR'}, "Scene export failed: no robot slots were exported")
+            return {'CANCELLED'}
+
+        metadata = {
+            "scene_name": scene_name,
+            "export_source": "blender",
+            "exported_at": datetime.now().isoformat(timespec='seconds'),
+            "output_folder": bundle_dir,
+            "frame_range": {
+                "start": start_frame,
+                "end": end_frame,
+                "length_frames": (end_frame - start_frame + 1),
+            },
+            "fps": fps,
+            "robots": metadata_robots,
+        }
+        if skipped:
+            metadata["skipped"] = skipped
+
+        metadata_path = os.path.join(bundle_dir, "scene_metadata.json")
+        try:
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to write metadata JSON: {e}")
+            return {'CANCELLED'}
+
+        if first_csv_export_path:
+            context.scene.xarm_last_export_path = first_csv_export_path
+
+        if skipped:
+            self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, {len(skipped)} skipped)")
+        else:
+            self.report({'INFO'}, f"Scene bundle exported ({len(metadata_robots)} robots)")
+
+        print(f"[SUCCESS] Scene bundle exported: {bundle_dir}")
+        print(f"[INFO] Metadata: {metadata_path}")
+        return {'FINISHED'}

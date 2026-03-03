@@ -29,6 +29,7 @@ from .panels import rig_panel, export_panel
 def register():
     """Register addon classes and properties"""
     print("[xArm Animation Workflow] Registering addon...")
+    bpy.utils.register_class(export_operators.XARM_PG_SceneRobotSlot)
 
     # ── Scene properties (rig setup parameters) ──────────
     bpy.types.Scene.xarm_source_collection_name = bpy.props.StringProperty(
@@ -139,6 +140,31 @@ def register():
         subtype='PERCENTAGE'
     )
 
+    # Scene export settings (multi-robot bundle)
+    bpy.types.Scene.xarm_scene_export_name = bpy.props.StringProperty(
+        name="Scene Name",
+        description="Scene name stored in metadata and used for output folder name",
+        default="scene_export"
+    )
+
+    bpy.types.Scene.xarm_scene_export_dir = bpy.props.StringProperty(
+        name="Scene Export Root",
+        description="Root folder for scene export bundles",
+        default="",
+        subtype='DIR_PATH'
+    )
+
+    bpy.types.Scene.xarm_scene_export_slots = bpy.props.CollectionProperty(
+        name="Scene Robot Slots",
+        type=export_operators.XARM_PG_SceneRobotSlot
+    )
+
+    bpy.types.Scene.xarm_scene_export_active_slot = bpy.props.IntProperty(
+        name="Active Scene Slot",
+        default=0,
+        min=0
+    )
+
     # ── Object properties (per-armature settings) ──────────
     # Mode selection with update callback for dynamic switching
     bpy.types.Object.xarm_mode = bpy.props.EnumProperty(
@@ -165,6 +191,10 @@ def register():
     bpy.utils.register_class(setup_rig.XARM_OT_ResetTCP)
     bpy.utils.register_class(setup_rig.XARM_OT_ClearAllTransforms)
     bpy.utils.register_class(setup_rig.XARM_OT_RefreshWidgets)
+    bpy.utils.register_class(export_operators.XARM_OT_AddSceneRobotSlot)
+    bpy.utils.register_class(export_operators.XARM_OT_RemoveSceneRobotSlot)
+    bpy.utils.register_class(export_operators.XARM_OT_SelectSceneExportDir)
+    bpy.utils.register_class(export_operators.XARM_OT_ExportSceneBundle)
     bpy.utils.register_class(export_operators.XARM_OT_ExportReport)
     bpy.utils.register_class(export_operators.XARM_OT_ClearMarkers)
     bpy.utils.register_class(export_operators.XARM_OT_DirectExport)
@@ -175,7 +205,9 @@ def register():
 
     # ── Register panels ──────────
     bpy.utils.register_class(rig_panel.XARM_PT_RigSetup)
-    bpy.utils.register_class(export_panel.XARM_PT_Export)
+    bpy.utils.register_class(export_panel.XARM_PT_SingleExport)
+    bpy.utils.register_class(export_panel.XARM_PT_SceneExport)
+    bpy.utils.register_class(export_panel.XARM_PT_Playback)
 
     print("[xArm Animation Workflow] Registration complete")
 
@@ -185,7 +217,9 @@ def unregister():
     print("[xArm Animation Workflow] Unregistering addon...")
 
     # Unregister in reverse order
-    bpy.utils.unregister_class(export_panel.XARM_PT_Export)
+    bpy.utils.unregister_class(export_panel.XARM_PT_Playback)
+    bpy.utils.unregister_class(export_panel.XARM_PT_SceneExport)
+    bpy.utils.unregister_class(export_panel.XARM_PT_SingleExport)
     bpy.utils.unregister_class(rig_panel.XARM_PT_RigSetup)
     bpy.utils.unregister_class(play_csv.XARM_OT_StopPlayback)
     bpy.utils.unregister_class(play_csv.XARM_OT_PlayCSV)
@@ -194,12 +228,20 @@ def unregister():
     bpy.utils.unregister_class(export_operators.XARM_OT_DirectExport)
     bpy.utils.unregister_class(export_operators.XARM_OT_ClearMarkers)
     bpy.utils.unregister_class(export_operators.XARM_OT_ExportReport)
+    bpy.utils.unregister_class(export_operators.XARM_OT_ExportSceneBundle)
+    bpy.utils.unregister_class(export_operators.XARM_OT_SelectSceneExportDir)
+    bpy.utils.unregister_class(export_operators.XARM_OT_RemoveSceneRobotSlot)
+    bpy.utils.unregister_class(export_operators.XARM_OT_AddSceneRobotSlot)
     bpy.utils.unregister_class(setup_rig.XARM_OT_RefreshWidgets)
     bpy.utils.unregister_class(setup_rig.XARM_OT_ClearAllTransforms)
     bpy.utils.unregister_class(setup_rig.XARM_OT_ResetTCP)
     bpy.utils.unregister_class(setup_rig.XARM_OT_SetupRig)
 
     # Delete properties
+    del bpy.types.Scene.xarm_scene_export_active_slot
+    del bpy.types.Scene.xarm_scene_export_slots
+    del bpy.types.Scene.xarm_scene_export_dir
+    del bpy.types.Scene.xarm_scene_export_name
     del bpy.types.Scene.xarm_speed_warning_threshold
     del bpy.types.Scene.xarm_playback_csv_path
     del bpy.types.Scene.xarm_last_export_path
@@ -216,6 +258,7 @@ def unregister():
     del bpy.types.Scene.xarm_robot_type
     del bpy.types.Scene.xarm_output_collection_name
     del bpy.types.Scene.xarm_source_collection_name
+    bpy.utils.unregister_class(export_operators.XARM_PG_SceneRobotSlot)
 
     print("[xArm Animation Workflow] Unregistration complete")
 
