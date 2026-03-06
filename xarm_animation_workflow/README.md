@@ -1,6 +1,6 @@
 # xArm Animation Workflow
 
-Blender addon for **UFactory 850** robot animation: rig setup, single CSV export, multi-robot scene bundle export, and robot playback.
+Blender addon for **UFactory 850** robot animation: rig setup, single CSV export, multi-robot scene bundle export, collision URDF export, and robot playback.
 
 ## Installation
 
@@ -15,12 +15,13 @@ Blender addon for **UFactory 850** robot animation: rig setup, single CSV export
 
 ## Panels
 
-The addon provides four panels in `View3D > Sidebar > xArm Animation`:
+The addon provides five panels in `View3D > Sidebar > xArm Animation`:
 
 1. `Rig Setup & Control`
 2. `Single Export`
 3. `Scene Export`
 4. `Playback`
+5. `Collision Export`
 
 ## Workflow
 
@@ -71,6 +72,20 @@ Current metadata keys:
 | Servo | Streaming playback (real-time) |
 
 **Note**: Localhost (`127.0.0.1`) disables joint limit checks for simulation.
+
+### 6. Collision Export (URDF Bundle)
+Collision Export writes one folder with:
+1. `urdf/<urdf_name>.urdf`
+2. `submodels/floating_base/urdf/floatingbase.urdf`
+3. `meshes/stl/*.stl`
+
+Notes:
+- Select collection (default expected name: `collision`).
+- Uses fixed link name `new_link` in URDF.
+- Uses Phobos-like output: visual can be box or mesh, collision is exported as box primitives for robust loader compatibility.
+- Mesh references include `scale="1 1 1"` and point to `meshes/stl`.
+- Includes floating-base freeflyer chain in `floatingbase.urdf`.
+- Adds explicit `<inertial>` blocks on exported links to avoid PyBullet "No inertial data for link" warnings.
 
 ## Requirements
 

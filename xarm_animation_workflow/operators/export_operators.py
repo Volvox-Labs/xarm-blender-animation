@@ -10,6 +10,8 @@ import bpy
 import os
 import json
 import math
+import struct
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Tuple, List, Dict, Set, Optional, Any
 
@@ -17,6 +19,9 @@ from ..core.robot_config import XArmRigConfig
 from ..core.bone_utils import BoneAngleExtractor
 from ..core.csv_export import SpeedCalculator, CSVExporter
 from .setup_rig import get_armature_from_collection
+
+COLLISION_DEFAULT_COLLECTION = "collision"
+COLLISION_FIXED_LINK_NAME = "new_link"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -423,6 +428,370 @@ class XARM_OT_SelectSceneExportDir(bpy.types.Operator):
 
         context.scene.xarm_scene_export_dir = selected
         self.report({'INFO'}, f"Scene export folder set: {selected}")
+        return {'FINISHED'}
+
+
+def _indent_xml(elem: ET.Element, level: int = 0):
+    """Pretty-print XML tree in-place."""
+    indent = "\n" + ("  " * level)
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = indent + "  "
+        for child in elem:
+            _indent_xml(child, level + 1)
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = indent
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = indent
+
+
+def _format_xyz(values: Tuple[float, float, float]) -> str:
+    return f"{values[0]:.5f} {values[1]:.5f} {values[2]:.5f}"
+
+
+def _sanitize_identifier(name: str, fallback: str = "item") -> str:
+    safe = _sanitize_name(name, fallback=fallback)
+    return safe.replace(".", "_").replace("-", "_")
+
+
+def _unique_name(base_name: str, used: Set[str]) -> str:
+    candidate = base_name
+    suffix = 1
+    while candidate in used:
+        suffix += 1
+        candidate = f"{base_name}_{suffix}"
+    used.add(candidate)
+    return candidate
+
+
+def _write_binary_stl(mesh: bpy.types.Mesh, filepath: str):
+    """Write mesh as binary STL."""
+    mesh.calc_loop_triangles()
+    tris = mesh.loop_triangles
+    if len(tris) == 0:
+        raise ValueError("Mesh has no triangles")
+
+    header = b"xarm_collision_export_stl"
+    header = header + (b" " * (80 - len(header)))
+
+    with open(filepath, "wb") as f:
+        f.write(header)
+        f.write(struct.pack("<I", len(tris)))
+        verts = mesh.vertices
+        for tri in tris:
+            normal = tri.normal
+            f.write(struct.pack("<3f", float(normal.x), float(normal.y), float(normal.z)))
+            for vidx in tri.vertices:
+                v = verts[vidx].co
+                f.write(struct.pack("<3f", float(v.x), float(v.y), float(v.z)))
+            f.write(struct.pack("<H", 0))
+
+
+def _export_object_stl(obj: bpy.types.Object, filepath: str, depsgraph: bpy.types.Depsgraph):
+    """Export evaluated object mesh data to STL."""
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh = obj_eval.to_mesh()
+    try:
+        _write_binary_stl(mesh, filepath)
+    finally:
+        obj_eval.to_mesh_clear()
+
+
+def _mesh_objects_from_collection(collection: bpy.types.Collection) -> List[bpy.types.Object]:
+    """Return deterministic list of mesh objects from collection and nested children."""
+    meshes = [obj for obj in collection.all_objects if obj.type == 'MESH']
+    return sorted(meshes, key=lambda o: o.name.lower())
+
+
+def _object_origin_xyz_rpy(obj: bpy.types.Object) -> Tuple[str, str]:
+    """Convert world transform to URDF origin strings."""
+    loc = obj.matrix_world.to_translation()
+    rot = obj.matrix_world.to_euler('XYZ')
+    xyz = _format_xyz((float(loc.x), float(loc.y), float(loc.z)))
+    rpy = _format_xyz((float(rot.x), float(rot.y), float(rot.z)))
+    return xyz, rpy
+
+
+def _is_box_like_object(obj: bpy.types.Object, depsgraph: bpy.types.Depsgraph) -> bool:
+    """Heuristic: object is a box primitive if evaluated mesh has 8 verts / 6 faces."""
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh = obj_eval.to_mesh()
+    try:
+        return len(mesh.vertices) == 8 and len(mesh.polygons) == 6
+    finally:
+        obj_eval.to_mesh_clear()
+
+
+def _object_box_size_xyz(obj: bpy.types.Object) -> str:
+    dims = obj.dimensions
+    # Clamp tiny/flat dimensions so collision boxes remain valid across simulators.
+    min_dim = 0.01
+    sx = max(min_dim, abs(float(dims.x)))
+    sy = max(min_dim, abs(float(dims.y)))
+    sz = max(min_dim, abs(float(dims.z)))
+    return _format_xyz((sx, sy, sz))
+
+
+def _append_geometry_node(geom_elem: ET.Element, kind: str, path: str, box_size: str):
+    if kind == "box":
+        ET.SubElement(geom_elem, "box", {"size": box_size})
+    else:
+        ET.SubElement(geom_elem, "mesh", {"filename": path, "scale": "1 1 1"})
+
+
+def _append_default_inertial(
+    link_elem: ET.Element,
+    mass: str = "1.00000",
+    inertia_diag: str = "1.00000",
+):
+    """Append a minimal inertial block to avoid simulator fallback defaults."""
+    inertial = ET.SubElement(link_elem, "inertial")
+    ET.SubElement(inertial, "origin", {"rpy": "0.00000 0.00000 0.00000", "xyz": "0.00000 0.00000 0.00000"})
+    ET.SubElement(inertial, "mass", {"value": mass})
+    ET.SubElement(inertial, "inertia", {
+        "ixx": inertia_diag, "ixy": "0.00000", "ixz": "0.00000",
+        "iyy": inertia_diag, "iyz": "0.00000", "izz": inertia_diag,
+    })
+
+
+def _append_link_geometry(link_elem: ET.Element, entries: List[Dict[str, Any]]):
+    """Append visual/collision blocks for each exported object entry."""
+    for entry in entries:
+        visual = ET.SubElement(link_elem, "visual", {"name": f"viz_{entry['name']}"})
+        ET.SubElement(visual, "origin", {"rpy": entry["rpy"], "xyz": entry["xyz"]})
+        visual_geom = ET.SubElement(visual, "geometry")
+        _append_geometry_node(
+            geom_elem=visual_geom,
+            kind=entry["visual_kind"],
+            path=entry.get("visual_rel", ""),
+            box_size=entry.get("visual_box_size", ""),
+        )
+        ET.SubElement(visual, "material", {"name": "None"})
+
+        collision = ET.SubElement(link_elem, "collision", {"name": f"{entry['name']}_collision"})
+        ET.SubElement(collision, "origin", {"rpy": entry["rpy"], "xyz": entry["xyz"]})
+        collision_geom = ET.SubElement(collision, "geometry")
+        _append_geometry_node(
+            geom_elem=collision_geom,
+            kind=entry["collision_kind"],
+            path=entry.get("collision_rel", ""),
+            box_size=entry.get("collision_box_size", ""),
+        )
+
+
+def _build_main_collision_urdf(robot_name: str, entries: List[Dict[str, Any]]) -> ET.Element:
+    robot = ET.Element("robot", {"name": robot_name, "version": "1.0"})
+    link = ET.SubElement(robot, "link", {"name": COLLISION_FIXED_LINK_NAME})
+    _append_default_inertial(link)
+    _append_link_geometry(link, entries)
+    _indent_xml(robot)
+    return robot
+
+
+def _build_floating_base_urdf(entries: List[Dict[str, Any]]) -> ET.Element:
+    robot = ET.Element("robot", {"name": "floatingbase", "version": "1.0"})
+
+    joints = [
+        ("FreeFlyerX", "prismatic", "base_link", "FreeFlyerX_Link", "1.00000 0.00000 0.00000"),
+        ("FreeFlyerY", "prismatic", "FreeFlyerX_Link", "FreeFlyerY_Link", "0.00000 1.00000 0.00000"),
+        ("FreeFlyerZ", "prismatic", "FreeFlyerY_Link", "FreeFlyerZ_Link", "0.00000 0.00000 1.00000"),
+        ("FreeFlyerRX", "revolute", "FreeFlyerZ_Link", "FreeFlyerRX_Link", "1.00000 0.00000 0.00000"),
+        ("FreeFlyerRY", "revolute", "FreeFlyerRX_Link", "FreeFlyerRY_Link", "0.00000 1.00000 0.00000"),
+        ("FreeFlyerRZ", "revolute", "FreeFlyerRY_Link", COLLISION_FIXED_LINK_NAME, "0.00000 0.00000 1.00000"),
+    ]
+
+    for name, joint_type, parent, child, axis in joints:
+        joint = ET.SubElement(robot, "joint", {"name": name, "type": joint_type})
+        ET.SubElement(joint, "limit", {
+            "lower": "-1.57000",
+            "upper": "1.57000",
+            "effort": "0.00000",
+            "velocity": "0.00000",
+        })
+        ET.SubElement(joint, "origin", {"rpy": "0.00000 0.00000 0.00000", "xyz": "0.00000 0.00000 0.00000"})
+        ET.SubElement(joint, "parent", {"link": parent})
+        ET.SubElement(joint, "child", {"link": child})
+        ET.SubElement(joint, "axis", {"xyz": axis})
+
+    base_link = ET.SubElement(robot, "link", {"name": "base_link"})
+    _append_default_inertial(base_link, mass="0.00000", inertia_diag="0.00000")
+
+    freeflyer_x_link = ET.SubElement(robot, "link", {"name": "FreeFlyerX_Link"})
+    _append_default_inertial(freeflyer_x_link)
+    freeflyer_y_link = ET.SubElement(robot, "link", {"name": "FreeFlyerY_Link"})
+    _append_default_inertial(freeflyer_y_link)
+    freeflyer_z_link = ET.SubElement(robot, "link", {"name": "FreeFlyerZ_Link"})
+    _append_default_inertial(freeflyer_z_link)
+    freeflyer_rx_link = ET.SubElement(robot, "link", {"name": "FreeFlyerRX_Link"})
+    _append_default_inertial(freeflyer_rx_link)
+    freeflyer_ry_link = ET.SubElement(robot, "link", {"name": "FreeFlyerRY_Link"})
+    _append_default_inertial(freeflyer_ry_link)
+
+    final_link = ET.SubElement(robot, "link", {"name": COLLISION_FIXED_LINK_NAME})
+    _append_default_inertial(final_link)
+    _append_link_geometry(final_link, entries)
+
+    _indent_xml(robot)
+    return robot
+
+
+def _write_urdf_xml(root_elem: ET.Element, filepath: str):
+    ET.ElementTree(root_elem).write(filepath, encoding="utf-8", xml_declaration=False)
+
+
+class XARM_OT_SelectCollisionExportDir(bpy.types.Operator):
+    """Select folder for collision URDF export."""
+    bl_idname = "xarm.select_collision_export_dir"
+    bl_label = "Select Collision Export Folder"
+    bl_options = {'REGISTER'}
+
+    filepath: bpy.props.StringProperty(
+        name="Folder",
+        description="Folder used as root for collision URDF export",
+        subtype='DIR_PATH',
+    )
+
+    def invoke(self, context, event):
+        scene = context.scene
+        if scene.xarm_collision_export_dir:
+            self.filepath = scene.xarm_collision_export_dir
+        else:
+            self.filepath = bpy.path.abspath("//")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        selected = bpy.path.abspath(self.filepath)
+        if not selected:
+            self.report({'ERROR'}, "No folder selected")
+            return {'CANCELLED'}
+
+        if os.path.isfile(selected):
+            selected = os.path.dirname(selected)
+
+        context.scene.xarm_collision_export_dir = selected
+        self.report({'INFO'}, f"Collision export folder set: {selected}")
+        return {'FINISHED'}
+
+
+class XARM_OT_ExportCollisionURDF(bpy.types.Operator):
+    """Export collision collection to URDF bundle with floating-base model."""
+    bl_idname = "xarm.export_collision_urdf"
+    bl_label = "Export Collision URDF"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        scene = context.scene
+        collection = scene.xarm_collision_collection or bpy.data.collections.get(COLLISION_DEFAULT_COLLECTION)
+        if collection is None:
+            self.report({'ERROR'}, "Select collision collection (default expected: 'collision')")
+            return {'CANCELLED'}
+
+        urdf_name = _sanitize_identifier(scene.xarm_collision_urdf_name.strip(), fallback="site_collision")
+        if not urdf_name:
+            self.report({'ERROR'}, "URDF name is empty")
+            return {'CANCELLED'}
+
+        export_root = scene.xarm_collision_export_dir.strip() if scene.xarm_collision_export_dir else bpy.path.abspath("//")
+        export_root = bpy.path.abspath(export_root)
+        if not export_root:
+            self.report({'ERROR'}, "Select export folder")
+            return {'CANCELLED'}
+
+        mesh_objects = _mesh_objects_from_collection(collection)
+        if not mesh_objects:
+            self.report({'ERROR'}, f"No mesh objects found in collection '{collection.name}'")
+            return {'CANCELLED'}
+
+        bundle_dir = os.path.join(export_root, urdf_name)
+        main_urdf_dir = os.path.join(bundle_dir, "urdf")
+        floating_urdf_dir = os.path.join(bundle_dir, "submodels", "floating_base", "urdf")
+        stl_mesh_dir = os.path.join(bundle_dir, "meshes", "stl")
+
+        os.makedirs(main_urdf_dir, exist_ok=True)
+        os.makedirs(floating_urdf_dir, exist_ok=True)
+        os.makedirs(stl_mesh_dir, exist_ok=True)
+
+        depsgraph = context.evaluated_depsgraph_get()
+        used_names: Set[str] = set()
+        used_entry_names: Set[str] = set()
+        entries_main: List[Dict[str, Any]] = []
+        entries_floating: List[Dict[str, Any]] = []
+
+        try:
+            for obj in mesh_objects:
+                mesh_base = _unique_name(_sanitize_identifier(obj.name, fallback="mesh"), used_names)
+                mesh_abs = os.path.join(stl_mesh_dir, f"{mesh_base}.stl")
+
+                xyz, rpy = _object_origin_xyz_rpy(obj)
+                is_box = _is_box_like_object(obj, depsgraph)
+                collision_box_size = _object_box_size_xyz(obj)
+                if is_box:
+                    box_size = _object_box_size_xyz(obj)
+                    visual_kind = "box"
+                    collision_kind = "box"
+                    visual_rel_main = ""
+                    collision_rel_main = ""
+                    visual_rel_float = ""
+                    collision_rel_float = ""
+                else:
+                    _export_object_stl(obj, mesh_abs, depsgraph)
+                    visual_kind = "mesh"
+                    # Use box collisions for compatibility with strict URDF loaders.
+                    collision_kind = "box"
+                    box_size = ""
+                    visual_rel_main = os.path.relpath(mesh_abs, start=main_urdf_dir).replace("\\", "/")
+                    collision_rel_main = ""
+                    visual_rel_float = os.path.relpath(mesh_abs, start=floating_urdf_dir).replace("\\", "/")
+                    collision_rel_float = ""
+
+                entry_name = _unique_name(
+                    _sanitize_identifier(obj.name, fallback=mesh_base),
+                    used_entry_names,
+                )
+                entries_main.append({
+                    "name": entry_name,
+                    "xyz": xyz,
+                    "rpy": rpy,
+                    "visual_kind": visual_kind,
+                    "collision_kind": collision_kind,
+                    "visual_box_size": box_size,
+                    "collision_box_size": collision_box_size,
+                    "visual_rel": visual_rel_main,
+                    "collision_rel": collision_rel_main,
+                })
+                entries_floating.append({
+                    "name": entry_name,
+                    "xyz": xyz,
+                    "rpy": rpy,
+                    "visual_kind": visual_kind,
+                    "collision_kind": collision_kind,
+                    "visual_box_size": box_size,
+                    "collision_box_size": collision_box_size,
+                    "visual_rel": visual_rel_float,
+                    "collision_rel": collision_rel_float,
+                })
+        except Exception as e:
+            self.report({'ERROR'}, f"Collision mesh export failed: {e}")
+            return {'CANCELLED'}
+
+        main_urdf_path = os.path.join(main_urdf_dir, f"{urdf_name}.urdf")
+        floating_urdf_path = os.path.join(floating_urdf_dir, "floatingbase.urdf")
+
+        try:
+            main_root = _build_main_collision_urdf(urdf_name, entries_main)
+            floating_root = _build_floating_base_urdf(entries_floating)
+            _write_urdf_xml(main_root, main_urdf_path)
+            _write_urdf_xml(floating_root, floating_urdf_path)
+        except Exception as e:
+            self.report({'ERROR'}, f"URDF write failed: {e}")
+            return {'CANCELLED'}
+
+        scene.xarm_collision_last_export_path = main_urdf_path
+        self.report({'INFO'}, f"Exported collision URDF bundle: {urdf_name} ({len(entries_main)} meshes)")
+        print(f"[SUCCESS] Collision URDF exported: {main_urdf_path}")
+        print(f"[INFO] Floating base URDF: {floating_urdf_path}")
         return {'FINISHED'}
 
 
