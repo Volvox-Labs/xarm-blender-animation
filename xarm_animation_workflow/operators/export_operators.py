@@ -240,6 +240,99 @@ def _export_armature_action_to_csv(
     }
 
 
+def _bake_armature_action_to_csv(
+    context: bpy.types.Context,
+    armature: bpy.types.Object,
+    filepath: str,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    max_speed_pct: float,
+    warning_threshold: float,
+) -> Dict[str, Any]:
+    """Bake source armature action to a temp rig, then export baked result to CSV."""
+    baked_armature = None
+    baked_action = None
+    baked_data = None
+    original_active_object = context.view_layer.objects.active
+    source_action_name = armature.animation_data.action.name if armature.animation_data and armature.animation_data.action else ""
+
+    try:
+        baked_armature = armature.copy()
+        baked_data = armature.data.copy()
+        baked_armature.data = baked_data
+        baked_armature.name = f"{armature.name}_SCENE_BAKE_TEMP"
+        baked_armature.data.name = f"{armature.data.name}_SCENE_BAKE_TEMP"
+
+        target_collection = armature.users_collection[0] if armature.users_collection else context.scene.collection
+        target_collection.objects.link(baked_armature)
+
+        if not baked_armature.animation_data:
+            baked_armature.animation_data_create()
+        baked_armature.animation_data.action = armature.animation_data.action
+
+        for obj in context.view_layer.objects:
+            obj.select_set(False)
+        baked_armature.select_set(True)
+        context.view_layer.objects.active = baked_armature
+
+        area_3d = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
+        if area_3d is None:
+            raise RuntimeError("No 3D Viewport visible. Open one and retry.")
+        region = next((r for r in area_3d.regions if r.type == 'WINDOW'), None)
+
+        with context.temp_override(area=area_3d, region=region):
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            bpy.ops.nla.bake(
+                frame_start=start_frame,
+                frame_end=end_frame,
+                only_selected=False,
+                visual_keying=True,
+                clear_constraints=True,
+                clear_parents=False,
+                use_current_action=False,
+                bake_types={'POSE'},
+            )
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        baked_action = baked_armature.animation_data.action
+
+        summary = _export_armature_action_to_csv(
+            armature=baked_armature,
+            filepath=filepath,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            fps=fps,
+            max_speed_pct=max_speed_pct,
+            warning_threshold=warning_threshold,
+        )
+        if source_action_name:
+            summary["action_name"] = source_action_name
+        return summary
+    finally:
+        if baked_armature and baked_armature.name in bpy.data.objects:
+            try:
+                bpy.data.objects.remove(baked_armature, do_unlink=True)
+            except Exception:
+                pass
+
+        if baked_action and baked_action.name in bpy.data.actions:
+            try:
+                bpy.data.actions.remove(baked_action)
+            except Exception:
+                pass
+
+        if baked_data and baked_data.users == 0 and baked_data.name in bpy.data.armatures:
+            try:
+                bpy.data.armatures.remove(baked_data)
+            except Exception:
+                pass
+
+        if original_active_object and original_active_object.name in bpy.data.objects:
+            context.view_layer.objects.active = original_active_object
+
+
 class XARM_PG_SceneRobotSlot(bpy.types.PropertyGroup):
     """One robot entry in scene-level export."""
     robot_id: bpy.props.StringProperty(
@@ -361,13 +454,6 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         subtype='FILE_PATH'
     )
 
-    # Action selection
-    action_name: bpy.props.StringProperty(
-        name="Action",
-        description="Action to export (leave empty for active action)",
-        default=""
-    )
-
     # Export settings
     fps: bpy.props.FloatProperty(
         name="FPS",
@@ -420,32 +506,12 @@ class XARM_OT_DirectExport(bpy.types.Operator):
         if self.end_frame == -1:
             self.end_frame = context.scene.frame_end
 
-        # Set action_name to active action if available
-        if armature and armature.animation_data and armature.animation_data.action:
-            self.action_name = armature.animation_data.action.name
-
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def draw(self, context):
         """Draw file dialog options"""
         layout = self.layout
-
-        # Action selection dropdown
-        armature = get_armature_from_collection(context.scene.xarm_active_collection)
-        if armature:
-            box = layout.box()
-            box.label(text="Animation Action", icon='ACTION')
-
-            # Get all actions
-            actions = [action for action in bpy.data.actions]
-
-            if actions:
-                col = box.column(align=True)
-                col.prop_search(self, "action_name", bpy.data, "actions", text="Action")
-                col.label(text="(Leave empty for active action)", icon='INFO')
-            else:
-                box.label(text="No actions found", icon='ERROR')
 
         # Export settings
         box = layout.box()
@@ -459,7 +525,6 @@ class XARM_OT_DirectExport(bpy.types.Operator):
 
     def execute(self, context):
         """Export animation to CSV"""
-        original_action = None
         try:
             # Get armature from collection
             armature = get_armature_from_collection(context.scene.xarm_active_collection)
@@ -471,19 +536,8 @@ class XARM_OT_DirectExport(bpy.types.Operator):
             if not armature.animation_data:
                 armature.animation_data_create()
 
-            # Store original action
-            original_action = armature.animation_data.action
-
-            # Set action to export if specified
-            if self.action_name:
-                action = bpy.data.actions.get(self.action_name)
-                if action:
-                    armature.animation_data.action = action
-                    print(f"[INFO] Exporting action: {self.action_name}")
-                else:
-                    self.report({'WARNING'}, f"Action '{self.action_name}' not found, using active action")
-            elif not armature.animation_data.action:
-                self.report({'ERROR'}, "No action selected and no active action on armature")
+            if not armature.animation_data.action:
+                self.report({'ERROR'}, "No active action on armature")
                 return {'CANCELLED'}
 
             # Get robot type from armature custom property
@@ -607,13 +661,6 @@ class XARM_OT_DirectExport(bpy.types.Operator):
             traceback.print_exc()
             return {'CANCELLED'}
 
-        finally:
-            # Restore original action
-            if original_action is not None and armature and armature.animation_data:
-                armature.animation_data.action = original_action
-                print(f"[INFO] Restored original action")
-
-
 class XARM_OT_BakeAndExport(bpy.types.Operator):
     """Bake animation then export to CSV"""
     bl_idname = "xarm.bake_and_export"
@@ -625,13 +672,6 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         name="File Path",
         description="Path to save CSV file",
         subtype='FILE_PATH'
-    )
-
-    # Action selection
-    action_name: bpy.props.StringProperty(
-        name="Action",
-        description="Action to export (leave empty for active action)",
-        default=""
     )
 
     # Export settings
@@ -686,32 +726,12 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         if self.end_frame == -1:
             self.end_frame = context.scene.frame_end
 
-        # Set action_name to active action if available
-        if armature and armature.animation_data and armature.animation_data.action:
-            self.action_name = armature.animation_data.action.name
-
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def draw(self, context):
         """Draw file dialog options"""
         layout = self.layout
-
-        # Action selection dropdown
-        armature = get_armature_from_collection(context.scene.xarm_active_collection)
-        if armature:
-            box = layout.box()
-            box.label(text="Animation Action", icon='ACTION')
-
-            # Get all actions
-            actions = [action for action in bpy.data.actions]
-
-            if actions:
-                col = box.column(align=True)
-                col.prop_search(self, "action_name", bpy.data, "actions", text="Action")
-                col.label(text="(Leave empty for active action)", icon='INFO')
-            else:
-                box.label(text="No actions found", icon='ERROR')
 
         # Export settings
         box = layout.box()
@@ -727,7 +747,6 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
         """Bake animation and export to CSV"""
         baked_armature = None
         baked_action = None
-        original_action = None
         original_active_object = None
         try:
             # Get armature from collection
@@ -740,20 +759,11 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             if not armature.animation_data:
                 armature.animation_data_create()
 
-            # Store original action and active object
-            original_action = armature.animation_data.action
+            # Store active object
             original_active_object = context.view_layer.objects.active
 
-            # Set action to export if specified
-            if self.action_name:
-                action = bpy.data.actions.get(self.action_name)
-                if action:
-                    armature.animation_data.action = action
-                    print(f"[INFO] Baking action: {self.action_name}")
-                else:
-                    self.report({'WARNING'}, f"Action '{self.action_name}' not found, using active action")
-            elif not armature.animation_data.action:
-                self.report({'ERROR'}, "No action selected and no active action on armature")
+            if not armature.animation_data.action:
+                self.report({'ERROR'}, "No active action on armature")
                 return {'CANCELLED'}
 
             # Get robot type from armature custom property
@@ -950,11 +960,6 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             return {'CANCELLED'}
 
         finally:
-            # Restore original action
-            if original_action is not None and armature and armature.animation_data:
-                armature.animation_data.action = original_action
-                print(f"[INFO] Restored original action on source armature")
-
             # Restore original active object
             if original_active_object and original_active_object.name in bpy.data.objects:
                 context.view_layer.objects.active = original_active_object
@@ -1037,7 +1042,8 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                 first_csv_export_path = csv_path
 
             try:
-                export_summary = _export_armature_action_to_csv(
+                export_summary = _bake_armature_action_to_csv(
+                    context=context,
                     armature=armature,
                     filepath=csv_path,
                     start_frame=start_frame,

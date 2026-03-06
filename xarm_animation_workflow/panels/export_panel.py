@@ -115,7 +115,7 @@ class XARM_PT_SceneExport(bpy.types.Panel):
                     if slot_arm and slot_arm.name in bpy.data.objects:
                         slot_box.label(text=f"Armature: {slot_arm.name}", icon='ARMATURE_DATA')
                         if slot_arm.animation_data and slot_arm.animation_data.action:
-                            slot_box.label(text=f"Action: {slot_arm.animation_data.action.name}", icon='ACTION')
+                            slot_box.label(text=f"Active: {slot_arm.animation_data.action.name}", icon='ACTION')
                         else:
                             slot_box.label(text="Action: none", icon='ERROR')
                     else:

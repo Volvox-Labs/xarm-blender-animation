@@ -1,6 +1,6 @@
 # xArm Animation Workflow
 
-Blender addon for **UFactory 850** robot animation: rig setup, CSV export, and robot playback.
+Blender addon for **UFactory 850** robot animation: rig setup, single CSV export, multi-robot scene bundle export, and robot playback.
 
 ## Installation
 
@@ -12,6 +12,15 @@ Blender addon for **UFactory 850** robot animation: rig setup, CSV export, and r
 - Windows: `C:\Program Files\Blender Foundation\Blender 5.0\5.0\python\lib\`
 - macOS: `/Applications/Blender.app/Contents/Resources/5.0/python/lib/`
 - Linux: `/usr/share/blender/5.0/python/lib/`
+
+## Panels
+
+The addon provides four panels in `View3D > Sidebar > xArm Animation`:
+
+1. `Rig Setup & Control`
+2. `Single Export`
+3. `Scene Export`
+4. `Playback`
 
 ## Workflow
 
@@ -29,13 +38,29 @@ Choose a mode in the panel:
 | Full IK | Move orange TCP bone | Position-based animation |
 | Hybrid | Rotate J1-J3 + move TCP | Control base pose with IK tip |
 
-### 3. Export
-- **Export CSV (No Bake)**: Direct export from current pose
-- **Bake & Export CSV**: Bake IK to keyframes, then export
+### 3. Single Export
+- **Export CSV (No Bake)**: direct export from current rig evaluation
+- **Bake & Export CSV**: visual-key bake, then export
+- Uses the armature's **active action** (no manual action picker in UI)
 
 Speed violations (>180 deg/s) show as timeline markers.
 
-### 4. Play on Robot (Optional)
+### 4. Scene Export (Multi-Robot Bundle)
+Scene Export writes one folder with:
+1. `scene_metadata.json`
+2. `csv/*.csv` (one file per robot slot)
+
+Notes:
+- Add robot slots, then set `ID` + `Collection` for each.
+- Scene Export always performs **bake+export** per slot.
+- Uses each armature's **active action**.
+- Metadata includes per-robot validation summary.
+
+Current metadata keys:
+- Top-level: `scene_name`, `export_source`, `exported_at`, `output_folder`, `frame_range`, `fps`, `robots`, optional `skipped`
+- Per robot: `id`, `collection`, `armature`, `transform.rotateXYZ`, `transform.translate`, `animation.path`, `animation.length_frames`, `animation.fps`, `animation.action`, `validation.*`
+
+### 5. Play on Robot (Optional)
 1. Set Robot IP, Mode, Loops
 2. Click **Select CSV**
 3. Click **Play CSV on Robot**
