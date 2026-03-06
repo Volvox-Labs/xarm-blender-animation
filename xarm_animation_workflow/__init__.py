@@ -26,10 +26,83 @@ from .operators import setup_rig, export_operators, play_csv
 from .panels import rig_panel, export_panel
 
 
+def _safe_register_class(cls):
+    """Register class, recovering from stale Blender reload state."""
+    existing = getattr(bpy.types, cls.__name__, None)
+    if existing is not None:
+        try:
+            bpy.utils.unregister_class(existing)
+        except Exception:
+            pass
+
+    try:
+        bpy.utils.register_class(cls)
+    except ValueError as e:
+        if "already registered as a subclass" in str(e):
+            try:
+                bpy.utils.unregister_class(cls)
+            except Exception:
+                pass
+            bpy.utils.register_class(cls)
+        else:
+            raise
+
+
+def _safe_unregister_class(cls):
+    """Unregister class if registered; ignore stale-state errors."""
+    existing = getattr(bpy.types, cls.__name__, None)
+    if existing is not None:
+        try:
+            bpy.utils.unregister_class(existing)
+            return
+        except Exception:
+            pass
+
+    try:
+        bpy.utils.unregister_class(cls)
+    except Exception:
+        pass
+
+
+def _safe_del_attr(owner, name: str):
+    """Delete RNA property only if present."""
+    if hasattr(owner, name):
+        delattr(owner, name)
+
+
+OPERATOR_CLASSES = (
+    setup_rig.XARM_OT_SetupRig,
+    setup_rig.XARM_OT_ResetTCP,
+    setup_rig.XARM_OT_ClearAllTransforms,
+    setup_rig.XARM_OT_RefreshWidgets,
+    export_operators.XARM_OT_AddSceneRobotSlot,
+    export_operators.XARM_OT_RemoveSceneRobotSlot,
+    export_operators.XARM_OT_SelectSceneExportDir,
+    export_operators.XARM_OT_ExportSceneBundle,
+    export_operators.XARM_OT_SelectCollisionExportDir,
+    export_operators.XARM_OT_ExportCollisionURDF,
+    export_operators.XARM_OT_ExportReport,
+    export_operators.XARM_OT_ClearMarkers,
+    export_operators.XARM_OT_DirectExport,
+    export_operators.XARM_OT_BakeAndExport,
+    play_csv.XARM_OT_SelectCSV,
+    play_csv.XARM_OT_PlayCSV,
+    play_csv.XARM_OT_StopPlayback,
+)
+
+PANEL_CLASSES = (
+    rig_panel.XARM_PT_RigSetup,
+    export_panel.XARM_PT_SingleExport,
+    export_panel.XARM_PT_SceneExport,
+    export_panel.XARM_PT_Playback,
+    export_panel.XARM_PT_CollisionExport,
+)
+
+
 def register():
     """Register addon classes and properties"""
     print("[xArm Animation Workflow] Registering addon...")
-    bpy.utils.register_class(export_operators.XARM_PG_SceneRobotSlot)
+    _safe_register_class(export_operators.XARM_PG_SceneRobotSlot)
 
     # ── Scene properties (rig setup parameters) ──────────
     bpy.types.Scene.xarm_source_collection_name = bpy.props.StringProperty(
@@ -165,6 +238,43 @@ def register():
         min=0
     )
 
+    # Collision URDF export settings
+    bpy.types.Scene.xarm_collision_collection = bpy.props.PointerProperty(
+        type=bpy.types.Collection,
+        name="Collision Collection",
+        description="Collection containing collision meshes to export"
+    )
+
+    bpy.types.Scene.xarm_collision_urdf_name = bpy.props.StringProperty(
+        name="Collision URDF Name",
+        description="URDF robot name and output folder name",
+        default="site_collision"
+    )
+
+    bpy.types.Scene.xarm_collision_export_dir = bpy.props.StringProperty(
+        name="Collision Export Root",
+        description="Root folder for collision URDF bundle export",
+        default="",
+        subtype='DIR_PATH'
+    )
+
+    bpy.types.Scene.xarm_collision_last_export_path = bpy.props.StringProperty(
+        name="Last Collision Export",
+        description="Path to last exported collision URDF file",
+        default=""
+    )
+
+    # Default collision collection if available (guard restricted startup context)
+    data_api = getattr(bpy, "data", None)
+    collections = getattr(data_api, "collections", None) if data_api else None
+    scenes = getattr(data_api, "scenes", None) if data_api else None
+    if collections is not None and scenes is not None:
+        default_collision = collections.get(export_operators.COLLISION_DEFAULT_COLLECTION)
+        if default_collision:
+            for scene in scenes:
+                if not scene.xarm_collision_collection:
+                    scene.xarm_collision_collection = default_collision
+
     # ── Object properties (per-armature settings) ──────────
     # Mode selection with update callback for dynamic switching
     bpy.types.Object.xarm_mode = bpy.props.EnumProperty(
@@ -187,27 +297,12 @@ def register():
     )
 
     # ── Register operators ──────────
-    bpy.utils.register_class(setup_rig.XARM_OT_SetupRig)
-    bpy.utils.register_class(setup_rig.XARM_OT_ResetTCP)
-    bpy.utils.register_class(setup_rig.XARM_OT_ClearAllTransforms)
-    bpy.utils.register_class(setup_rig.XARM_OT_RefreshWidgets)
-    bpy.utils.register_class(export_operators.XARM_OT_AddSceneRobotSlot)
-    bpy.utils.register_class(export_operators.XARM_OT_RemoveSceneRobotSlot)
-    bpy.utils.register_class(export_operators.XARM_OT_SelectSceneExportDir)
-    bpy.utils.register_class(export_operators.XARM_OT_ExportSceneBundle)
-    bpy.utils.register_class(export_operators.XARM_OT_ExportReport)
-    bpy.utils.register_class(export_operators.XARM_OT_ClearMarkers)
-    bpy.utils.register_class(export_operators.XARM_OT_DirectExport)
-    bpy.utils.register_class(export_operators.XARM_OT_BakeAndExport)
-    bpy.utils.register_class(play_csv.XARM_OT_SelectCSV)
-    bpy.utils.register_class(play_csv.XARM_OT_PlayCSV)
-    bpy.utils.register_class(play_csv.XARM_OT_StopPlayback)
+    for cls in OPERATOR_CLASSES:
+        _safe_register_class(cls)
 
     # ── Register panels ──────────
-    bpy.utils.register_class(rig_panel.XARM_PT_RigSetup)
-    bpy.utils.register_class(export_panel.XARM_PT_SingleExport)
-    bpy.utils.register_class(export_panel.XARM_PT_SceneExport)
-    bpy.utils.register_class(export_panel.XARM_PT_Playback)
+    for cls in PANEL_CLASSES:
+        _safe_register_class(cls)
 
     print("[xArm Animation Workflow] Registration complete")
 
@@ -217,48 +312,37 @@ def unregister():
     print("[xArm Animation Workflow] Unregistering addon...")
 
     # Unregister in reverse order
-    bpy.utils.unregister_class(export_panel.XARM_PT_Playback)
-    bpy.utils.unregister_class(export_panel.XARM_PT_SceneExport)
-    bpy.utils.unregister_class(export_panel.XARM_PT_SingleExport)
-    bpy.utils.unregister_class(rig_panel.XARM_PT_RigSetup)
-    bpy.utils.unregister_class(play_csv.XARM_OT_StopPlayback)
-    bpy.utils.unregister_class(play_csv.XARM_OT_PlayCSV)
-    bpy.utils.unregister_class(play_csv.XARM_OT_SelectCSV)
-    bpy.utils.unregister_class(export_operators.XARM_OT_BakeAndExport)
-    bpy.utils.unregister_class(export_operators.XARM_OT_DirectExport)
-    bpy.utils.unregister_class(export_operators.XARM_OT_ClearMarkers)
-    bpy.utils.unregister_class(export_operators.XARM_OT_ExportReport)
-    bpy.utils.unregister_class(export_operators.XARM_OT_ExportSceneBundle)
-    bpy.utils.unregister_class(export_operators.XARM_OT_SelectSceneExportDir)
-    bpy.utils.unregister_class(export_operators.XARM_OT_RemoveSceneRobotSlot)
-    bpy.utils.unregister_class(export_operators.XARM_OT_AddSceneRobotSlot)
-    bpy.utils.unregister_class(setup_rig.XARM_OT_RefreshWidgets)
-    bpy.utils.unregister_class(setup_rig.XARM_OT_ClearAllTransforms)
-    bpy.utils.unregister_class(setup_rig.XARM_OT_ResetTCP)
-    bpy.utils.unregister_class(setup_rig.XARM_OT_SetupRig)
+    for cls in reversed(PANEL_CLASSES):
+        _safe_unregister_class(cls)
+    for cls in reversed(OPERATOR_CLASSES):
+        _safe_unregister_class(cls)
 
     # Delete properties
-    del bpy.types.Scene.xarm_scene_export_active_slot
-    del bpy.types.Scene.xarm_scene_export_slots
-    del bpy.types.Scene.xarm_scene_export_dir
-    del bpy.types.Scene.xarm_scene_export_name
-    del bpy.types.Scene.xarm_speed_warning_threshold
-    del bpy.types.Scene.xarm_playback_csv_path
-    del bpy.types.Scene.xarm_last_export_path
-    del bpy.types.Scene.xarm_playback_loops
-    del bpy.types.Scene.xarm_playback_mode
-    del bpy.types.Scene.xarm_robot_ip
-    del bpy.types.Object.xarm_ik_track_rotation
-    del bpy.types.Object.xarm_mode
-    del bpy.types.Scene.xarm_active_collection
-    del bpy.types.Scene.xarm_rig_armature
-    del bpy.types.Scene.xarm_widget_scale
-    del bpy.types.Scene.xarm_ik_chain_default
-    del bpy.types.Scene.xarm_default_mode
-    del bpy.types.Scene.xarm_robot_type
-    del bpy.types.Scene.xarm_output_collection_name
-    del bpy.types.Scene.xarm_source_collection_name
-    bpy.utils.unregister_class(export_operators.XARM_PG_SceneRobotSlot)
+    _safe_del_attr(bpy.types.Scene, "xarm_collision_last_export_path")
+    _safe_del_attr(bpy.types.Scene, "xarm_collision_export_dir")
+    _safe_del_attr(bpy.types.Scene, "xarm_collision_urdf_name")
+    _safe_del_attr(bpy.types.Scene, "xarm_collision_collection")
+    _safe_del_attr(bpy.types.Scene, "xarm_scene_export_active_slot")
+    _safe_del_attr(bpy.types.Scene, "xarm_scene_export_slots")
+    _safe_del_attr(bpy.types.Scene, "xarm_scene_export_dir")
+    _safe_del_attr(bpy.types.Scene, "xarm_scene_export_name")
+    _safe_del_attr(bpy.types.Scene, "xarm_speed_warning_threshold")
+    _safe_del_attr(bpy.types.Scene, "xarm_playback_csv_path")
+    _safe_del_attr(bpy.types.Scene, "xarm_last_export_path")
+    _safe_del_attr(bpy.types.Scene, "xarm_playback_loops")
+    _safe_del_attr(bpy.types.Scene, "xarm_playback_mode")
+    _safe_del_attr(bpy.types.Scene, "xarm_robot_ip")
+    _safe_del_attr(bpy.types.Object, "xarm_ik_track_rotation")
+    _safe_del_attr(bpy.types.Object, "xarm_mode")
+    _safe_del_attr(bpy.types.Scene, "xarm_active_collection")
+    _safe_del_attr(bpy.types.Scene, "xarm_rig_armature")
+    _safe_del_attr(bpy.types.Scene, "xarm_widget_scale")
+    _safe_del_attr(bpy.types.Scene, "xarm_ik_chain_default")
+    _safe_del_attr(bpy.types.Scene, "xarm_default_mode")
+    _safe_del_attr(bpy.types.Scene, "xarm_robot_type")
+    _safe_del_attr(bpy.types.Scene, "xarm_output_collection_name")
+    _safe_del_attr(bpy.types.Scene, "xarm_source_collection_name")
+    _safe_unregister_class(export_operators.XARM_PG_SceneRobotSlot)
 
     print("[xArm Animation Workflow] Unregistration complete")
 

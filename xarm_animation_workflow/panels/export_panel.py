@@ -181,13 +181,56 @@ class XARM_PT_Playback(bpy.types.Panel):
         warn_box.label(text="Ensure workspace is clear!", icon='ERROR')
 
 
+class XARM_PT_CollisionExport(bpy.types.Panel):
+    """Panel for exporting collision collection to URDF bundle."""
+    bl_label = "Collision Export"
+    bl_idname = "XARM_PT_COLLISION_EXPORT"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'xArm Animation'
+    bl_order = 4
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        box = layout.box()
+        box.label(text="Collision URDF Export", icon='MESH_CUBE')
+        col = box.column(align=True)
+
+        col.prop(scene, 'xarm_collision_collection', text='Collection')
+        col.prop(scene, 'xarm_collision_urdf_name', text='URDF Name')
+
+        row = col.row(align=True)
+        row.prop(scene, 'xarm_collision_export_dir', text='Save Root')
+        row.operator('xarm.select_collision_export_dir', text='', icon='FILE_FOLDER')
+
+        collection = scene.xarm_collision_collection or bpy.data.collections.get("collision")
+        if collection:
+            mesh_count = len([obj for obj in collection.all_objects if obj.type == 'MESH'])
+            col.label(text=f"Meshes: {mesh_count}", icon='OUTLINER_OB_MESH')
+        else:
+            col.label(text="No collision collection selected", icon='INFO')
+
+        col.separator()
+        col.operator('xarm.export_collision_urdf', text='Export Collision URDF', icon='EXPORT')
+
+        if scene.xarm_collision_last_export_path:
+            import os
+            filename = os.path.basename(scene.xarm_collision_last_export_path)
+            col.separator()
+            col.label(text=f"Last: {filename}", icon='FILE')
+
+
 def register():
     bpy.utils.register_class(XARM_PT_SingleExport)
     bpy.utils.register_class(XARM_PT_SceneExport)
     bpy.utils.register_class(XARM_PT_Playback)
+    bpy.utils.register_class(XARM_PT_CollisionExport)
 
 
 def unregister():
+    bpy.utils.unregister_class(XARM_PT_CollisionExport)
     bpy.utils.unregister_class(XARM_PT_Playback)
     bpy.utils.unregister_class(XARM_PT_SceneExport)
     bpy.utils.unregister_class(XARM_PT_SingleExport)

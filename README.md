@@ -8,6 +8,7 @@ Blender addon for UFactory robot animation workflow.
 - Mode Switching: Full FK, Full IK, or Hybrid control
 - Single Export: export animation to CSV (direct or baked) with speed validation
 - Scene Export: export multi-robot bundle (`scene_metadata.json` + `csv/*.csv`)
+- Collision Export: export collection meshes to URDF bundle (`urdf` + floating base + `meshes/stl`)
 - Robot Playback: play exported CSV directly on xArm hardware
 
 ## Installation
@@ -39,7 +40,8 @@ For robot playback functionality, copy the xArm library into Blender's Python fo
 2. Animate: choose FK/IK/Hybrid mode and keyframe controls.
 3. Single Export: use `Export CSV (No Bake)` or `Bake & Export CSV`.
 4. Scene Export: add robot slots and run `Export Scene Bundle` (always baked per slot).
-5. Playback: set robot IP, select CSV, play.
+5. Collision Export: select collision collection, set URDF name/path, export bundle.
+6. Playback: set robot IP, select CSV, play.
 
 ## Requirements
 
