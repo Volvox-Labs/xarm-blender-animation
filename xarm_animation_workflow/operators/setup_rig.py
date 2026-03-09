@@ -9,9 +9,9 @@ import bpy
 import math
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HELPER FUNCTIONS
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def xarm_rig_poll(self, obj):
     """Filter for armatures with xarm_robot_type property (created by Setup Rig)."""
@@ -33,9 +33,9 @@ def get_armature_from_collection(collection):
     return None
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WIDGET HELPERS
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 WIDGET_COLL = "WIDGETS"
 
@@ -104,9 +104,9 @@ def _cross(name):
     return _make_widget(name, v, e)
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DRIVER HELPER
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _add_driver(obj, data_path, expression, var_name, prop_data_path):
     """
@@ -134,9 +134,43 @@ def _add_driver(obj, data_path, expression, var_name, prop_data_path):
     var.targets[0].data_path = prop_data_path
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # MODE UPDATE CALLBACK (Critical for dynamic switching)
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _update_tcp_fk_parent_constraint(armature_obj, mode: int):
+    """In FK mode, make TCP copy FK joint 6 transform at tail; otherwise keep TCP standalone."""
+    pbones = armature_obj.pose.bones
+    tcp_bone = pbones.get("tcp")
+    fk_joint_6 = pbones.get("joint_6_fk")
+    if tcp_bone is None or fk_joint_6 is None:
+        return
+    constraint_name = "TCP FK Parent"
+    existing = tcp_bone.constraints.get(constraint_name)
+    if mode == 0:
+        if existing is None:
+            existing = tcp_bone.constraints.new('COPY_TRANSFORMS')
+            existing.name = constraint_name
+        elif existing.type != 'COPY_TRANSFORMS':
+            tcp_bone.constraints.remove(existing)
+            existing = tcp_bone.constraints.new('COPY_TRANSFORMS')
+            existing.name = constraint_name
+        existing.target = armature_obj
+        existing.subtarget = fk_joint_6.name
+        if hasattr(existing, "head_tail"):
+            existing.head_tail = 1.0
+        if hasattr(existing, "mix_mode"):
+            existing.mix_mode = 'REPLACE'
+        existing.owner_space = 'WORLD'
+        existing.target_space = 'WORLD'
+        existing.influence = 1.0
+        existing.mute = False
+        print("[xArm] TCP parent mode: FK (Copy Transforms joint_6_fk tail)")
+        return
+    if existing is not None:
+        tcp_bone.constraints.remove(existing)
+        print("[xArm] TCP parent mode: standalone (IK/Hybrid)")
+
 
 def xarm_mode_update_callback(armature_obj, context):
     """
@@ -197,7 +231,13 @@ def xarm_mode_update_callback(armature_obj, context):
     except Exception as e:
         print(f"[xArm] Failed to update IK chain_count: {e}")
 
-    # 3. Force viewport redraw
+    # 3. Update TCP parenting behavior by mode
+    try:
+        _update_tcp_fk_parent_constraint(armature_obj, mode)
+    except Exception as e:
+        print(f"[xArm] Failed to update TCP parent mode: {e}")
+
+    # 4. Force viewport redraw
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
             area.tag_redraw()
@@ -232,9 +272,9 @@ def xarm_ik_rotation_update_callback(armature_obj, context):
             area.tag_redraw()
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SETUP RIG OPERATOR
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class XARM_OT_SetupRig(bpy.types.Operator):
     """Create FK/IK animation rig from source twin collection"""
@@ -326,7 +366,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         rotation_axes = robot_config.rotation_axes
         joint_limits_deg = robot_config.joint_limits_deg
 
-        # ── 1. Find source collection ──────────────
+        # â”€â”€ 1. Find source collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         src_coll = bpy.data.collections.get(self.source_collection_name)
         if src_coll is None:
             self.report({'ERROR'}, f"Source collection '{self.source_collection_name}' not found")
@@ -336,14 +376,14 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             self.report({'ERROR'}, f"No armature in '{self.source_collection_name}'")
             return {'CANCELLED'}
 
-        # ── 2. Need VIEW_3D for operators ─────────
+        # â”€â”€ 2. Need VIEW_3D for operators â”€â”€â”€â”€â”€â”€â”€â”€â”€
         area_3d = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
         if area_3d is None:
             self.report({'ERROR'}, "No 3D Viewport visible. Open one and retry.")
             return {'CANCELLED'}
         region = next((r for r in area_3d.regions if r.type == 'WINDOW'), None)
 
-        # ── 3. Remove old output collection ───────
+        # â”€â”€ 3. Remove old output collection â”€â”€â”€â”€â”€â”€â”€
         old_coll = bpy.data.collections.get(self.output_collection_name)
         if old_coll:
             for obj in list(old_coll.objects):
@@ -351,12 +391,12 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             bpy.data.collections.remove(old_coll)
             print(f"[INFO]  Removed existing '{self.output_collection_name}'")
 
-        # ── 4. Create new output collection ───────
+        # â”€â”€ 4. Create new output collection â”€â”€â”€â”€â”€â”€â”€
         out_coll = bpy.data.collections.new(self.output_collection_name)
         context.scene.collection.children.link(out_coll)
         print(f"[INFO]  Created collection '{self.output_collection_name}'")
 
-        # ── 5. Duplicate all objects, rename ──────
+        # â”€â”€ 5. Duplicate all objects, rename â”€â”€â”€â”€â”€â”€
         obj_map = {}
         for obj in src_coll.objects:
             new_obj = obj.copy()
@@ -367,22 +407,22 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             new_obj.name = new_name
             out_coll.objects.link(new_obj)
             obj_map[obj] = new_obj
-            print(f"[INFO]    {obj.name!r:30s} → {new_name!r}")
+            print(f"[INFO]    {obj.name!r:30s} â†’ {new_name!r}")
 
-        # ── 6. Fix parent relationships ────────────
+        # â”€â”€ 6. Fix parent relationships â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for old_obj, new_obj in obj_map.items():
             if new_obj.parent in obj_map:
                 saved_inv = new_obj.matrix_parent_inverse.copy()
                 new_obj.parent = obj_map[new_obj.parent]
                 new_obj.matrix_parent_inverse = saved_inv
 
-        # ── 7. Fix armature modifiers ──────────────
+        # â”€â”€ 7. Fix armature modifiers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for new_obj in out_coll.objects:
             for mod in new_obj.modifiers:
                 if mod.type == 'ARMATURE' and mod.object in obj_map:
                     mod.object = obj_map[mod.object]
 
-        # ── 7b. Make mesh objects unselectable ─────
+        # â”€â”€ 7b. Make mesh objects unselectable â”€â”€â”€â”€â”€
         # Prevents accidental selection during animation (safer workflow)
         mesh_count = 0
         for new_obj in out_coll.objects:
@@ -392,15 +432,15 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         if mesh_count > 0:
             print(f"[INFO]  Made {mesh_count} mesh objects unselectable")
 
-        # ── 8. Locate renamed armature ────────────
+        # â”€â”€ 8. Locate renamed armature â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         anim_obj = next((o for o in out_coll.objects if o.type == 'ARMATURE'), None)
         if anim_obj is None:
             self.report({'ERROR'}, "Armature not found after duplication")
             return {'CANCELLED'}
 
-        # ── 8b. Rename armature based on collection name ────
+        # â”€â”€ 8b. Rename armature based on collection name â”€â”€â”€â”€
         collection_name = self.output_collection_name
-        # Pattern: "animation01" → "armature01"
+        # Pattern: "animation01" â†’ "armature01"
         if "animation" in collection_name.lower():
             armature_name = collection_name.replace("animation", "armature").replace("Animation", "Armature")
         else:
@@ -416,13 +456,13 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             self.report({'ERROR'}, f"Missing bones in '{anim_obj.name}': {missing}")
             return {'CANCELLED'}
 
-        # ── 9. Set as active ──────────────────────
+        # â”€â”€ 9. Set as active â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for obj in context.view_layer.objects:
             obj.select_set(False)
         anim_obj.select_set(True)
         context.view_layer.objects.active = anim_obj
 
-        # ── 10. Edit Mode — add FK/IK chains + free tcp ──────────────
+        # â”€â”€ 10. Edit Mode â€” add FK/IK chains + free tcp â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         with context.temp_override(area=area_3d, region=region):
             bpy.ops.object.mode_set(mode='EDIT')
 
@@ -450,17 +490,17 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             for i in range(2, 7):
                 edit_bones[f'joint_{i}_ik'].parent = edit_bones[f'joint_{i-1}_ik']
 
-            # TCP is free (no parent) — world space IK target
+            # TCP is free (no parent) â€” world space IK target
             tcp_eb = edit_bones['tcp']
             tcp_eb.parent = None
             tcp_eb.use_connect = False
             tcp_eb.use_deform = False
 
             print("[INFO]  FK chain (joint_1_fk..6_fk) and IK chain (joint_1_ik..6_ik) created")
-            print("[INFO]  tcp bone free (no parent) — world space IK target")
+            print("[INFO]  tcp bone free (no parent) â€” world space IK target")
             bpy.ops.object.mode_set(mode='OBJECT')
 
-        # ── 11. Pose Mode — constraints ───────────
+        # â”€â”€ 11. Pose Mode â€” constraints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         with context.temp_override(area=area_3d, region=region):
             bpy.ops.object.mode_set(mode='POSE')
 
@@ -511,9 +551,9 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             ik_main.use_rotation = True
 
             print("[INFO]  Copy Rotation (FK + IK) added to DEF bones joint_1..6")
-            print("[INFO]  IK solver on joint_6_ik → tcp bone (same armature)")
+            print("[INFO]  IK solver on joint_6_ik â†’ tcp bone (same armature)")
 
-            # ── Apply IK locks and joint limits ──────
+            # â”€â”€ Apply IK locks and joint limits â”€â”€â”€â”€â”€â”€
             for i in range(1, 7):
                 axis_spec = rotation_axes[i - 1]
                 limits_deg = joint_limits_deg[i - 1]
@@ -560,7 +600,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
 
             print("[INFO]  IK locks and joint limits applied to all bones (DEF, FK, IK)")
 
-            # ── FK bone constraints (lock location, lock rotation, limit rotation) ──────
+            # â”€â”€ FK bone constraints (lock location, lock rotation, limit rotation) â”€â”€â”€â”€â”€â”€
             for i in range(1, 7):
                 axis_spec = rotation_axes[i - 1]
                 limits_deg = joint_limits_deg[i - 1]
@@ -616,7 +656,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
-        # ── 12. Mode property initialization ──────
+        # â”€â”€ 12. Mode property initialization â”€â”€â”€â”€â”€â”€
         # Set EnumProperty (triggers update callback which creates custom property for drivers)
         anim_obj.xarm_mode = str(default_mode_int)
         print(f"[INFO]  Mode property: xarm_mode = {default_mode_int}")
@@ -635,8 +675,8 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         # Store robot config for export operators
         anim_obj["xarm_robot_type"] = self.robot_type
 
-        # ── 13. Drivers ───────────────────────────
-        # Driver: mode → ik_fk_blend (mode 0 = 0.0, mode 1/2 = 1.0)
+        # â”€â”€ 13. Drivers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Driver: mode â†’ ik_fk_blend (mode 0 = 0.0, mode 1/2 = 1.0)
         blend_path = '["ik_fk_blend"]'
         if anim_obj.animation_data:
             for fc in list(anim_obj.animation_data.drivers):
@@ -652,18 +692,18 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         var.targets[0].id = anim_obj
         var.targets[0].data_path = '["xarm_mode"]'
 
-        print("[INFO]  Driver: xarm_mode → ik_fk_blend")
+        print("[INFO]  Driver: xarm_mode â†’ ik_fk_blend")
 
-        # Driver: ik_fk_blend → constraint influences
+        # Driver: ik_fk_blend â†’ constraint influences
         for i in range(1, 7):
             fk_path = f'pose.bones["joint_{i}"].constraints["Copy FK"].influence'
             ik_path = f'pose.bones["joint_{i}"].constraints["Copy IK"].influence'
             _add_driver(anim_obj, fk_path, '1 - blend', 'blend', '["ik_fk_blend"]')
             _add_driver(anim_obj, ik_path, 'blend', 'blend', '["ik_fk_blend"]')
 
-        print("[INFO]  Drivers: ik_fk_blend → all joint constraints")
+        print("[INFO]  Drivers: ik_fk_blend â†’ all joint constraints")
 
-        # ── 14. Bone Collections (Blender 4.0+ API) ──────────────────
+        # â”€â”€ 14. Bone Collections (Blender 4.0+ API) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         arm_data = anim_obj.data
 
         for name in ('DEF', 'FK', 'IK'):
@@ -697,7 +737,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         ik_vis = "visible" if col_ik.is_visible else "hidden"
         print(f"[INFO]  Bone collections: DEF (hidden), FK ({fk_vis}), IK ({ik_vis})")
 
-        # ── 15. Widgets + Colors ──────────────────
+        # â”€â”€ 15. Widgets + Colors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ring_axes = ['Y', 'Z', 'Z', 'Y', 'Z', 'Y']
         pbones = anim_obj.pose.bones
         s = self.widget_scale
@@ -735,14 +775,14 @@ class XARM_OT_SetupRig(bpy.types.Operator):
 
         print("[INFO]  Widgets: FK rings (blue), IK J1-J2 rings (green), tcp cross (orange)")
 
-        # ── Save reference in scene for later operators ──────
+        # â”€â”€ Save reference in scene for later operators â”€â”€â”€â”€â”€â”€
         context.scene.xarm_rig_armature = anim_obj
         # Auto-select new collection (armature is found automatically)
         out_coll = bpy.data.collections.get(self.output_collection_name)
         if out_coll:
             context.scene.xarm_active_collection = out_coll
 
-        # ── Done ──────────────────────────────────
+        # â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         print()
         print(f"[DONE]  Collection '{self.output_collection_name}' ready for animation")
         print(f"        Armature: '{anim_obj.name}'")
@@ -752,9 +792,9 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         return {'FINISHED'}
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # UTILITY OPERATORS
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class XARM_OT_ResetTCP(bpy.types.Operator):
     """Reset TCP bone to home position (rest pose)"""

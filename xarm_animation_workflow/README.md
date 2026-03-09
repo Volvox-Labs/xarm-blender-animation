@@ -39,6 +39,10 @@ Choose a mode in the panel:
 | Full IK | Move orange TCP bone | Position-based animation |
 | Hybrid | Rotate J1-J3 + move TCP | Control base pose with IK tip |
 
+TCP behavior on mode switch:
+- `Full FK`: TCP gets a `Copy Transforms` constraint to `joint_6_fk` with `head_tail=1.0` (follows FK wrist tail).
+- `Full IK` / `Hybrid`: TCP returns to standalone (constraint removed).
+
 ### 3. Single Export
 - **Export CSV (No Bake)**: direct export from current rig evaluation
 - **Bake & Export CSV**: visual-key bake, then export
