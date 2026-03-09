@@ -67,7 +67,21 @@ class XARM_OT_ExportReport(bpy.types.Operator):
 
         # Speed violations
         speed_frames = data.get('speed_frames', {})
-        if speed_frames:
+        speed_warning_entries = data.get('speed_warning_entries', [])
+        if speed_warning_entries:
+            box = layout.box()
+            box.label(text=f"Speed Violations ({len(speed_warning_entries)} entries)", icon='ERROR')
+            col = box.column(align=True)
+            for entry in speed_warning_entries[:20]:
+                robot_id = str(entry.get("robot_id", "robot"))
+                frame = int(entry.get("frame", -1))
+                joint = int(entry.get("joint", 0))
+                vel = float(entry.get("deg_s", 0.0))
+                col.label(text=f"Robot {robot_id}, F{frame}, J{joint}: {vel:.1f} deg/s")
+            if len(speed_warning_entries) > 20:
+                col.label(text=f"... and {len(speed_warning_entries) - 20} more entries")
+            box.label(text="Tip: Markers added to timeline at violation frames", icon='MARKER')
+        elif speed_frames:
             box = layout.box()
             box.label(text=f"Speed Violations ({len(speed_frames)} frames)", icon='ERROR')
 
@@ -85,7 +99,21 @@ class XARM_OT_ExportReport(bpy.types.Operator):
 
         # Joint limit violations
         limit_frames = data.get('limit_frames', {})
-        if limit_frames:
+        joint_limit_entries = data.get('joint_limit_entries', [])
+        if joint_limit_entries:
+            box = layout.box()
+            box.alert = True
+            box.label(text=f"Joint Limit Violations ({len(joint_limit_entries)} entries)", icon='ERROR')
+            col = box.column(align=True)
+            for entry in joint_limit_entries[:20]:
+                robot_id = str(entry.get("robot_id", "robot"))
+                frame = int(entry.get("frame", -1))
+                errors = entry.get("errors", [])
+                first = str(errors[0]) if isinstance(errors, list) and errors else str(errors)
+                col.label(text=f"Robot {robot_id}, F{frame}: {first}")
+            if len(joint_limit_entries) > 20:
+                col.label(text=f"... and {len(joint_limit_entries) - 20} more entries")
+        elif limit_frames:
             box = layout.box()
             box.alert = True
             box.label(text=f"Joint Limit Violations ({len(limit_frames)} frames)", icon='ERROR')
@@ -1372,13 +1400,18 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
             return {'CANCELLED'}
 
         fps = float(scene.render.fps)
-        max_speed_pct = 50.0
+        # Scene export should preserve full measured speed percentage (no forced 50% cap).
+        max_speed_pct = 100.0
         warning_threshold = scene.xarm_speed_warning_threshold / 100.0
 
         used_file_names: Set[str] = set()
         metadata_robots: List[Dict[str, Any]] = []
         skipped: List[str] = []
         first_csv_export_path: Optional[str] = None
+        scene_speed_frames: Dict[int, List] = {}
+        scene_limit_frames: Dict[int, List] = {}
+        scene_speed_entries: List[Dict[str, Any]] = []
+        scene_limit_entries: List[Dict[str, Any]] = []
 
         for index, slot in enumerate(slots, start=1):
             robot_id = slot.robot_id.strip() or f"robot{index}"
@@ -1447,8 +1480,45 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                     "speed_warning_frames": len(export_summary["speed_frames"]),
                     "joint_limit_violation_frames": len(export_summary["limit_frames"]),
                     "peak_speed_percent": round(float(export_summary["max_speed_pct"]), 3),
+                    "speed_warning_detail": [
+                        {
+                            "frame": int(frame),
+                            "joints": [
+                                {
+                                    "joint": int(j + 1),
+                                    "deg_s": round(float(v), 3),
+                                }
+                                for j, v in violations
+                            ],
+                        }
+                        for frame, violations in sorted(export_summary["speed_frames"].items())
+                    ],
+                    "joint_limit_violation_detail": [
+                        {
+                            "frame": int(frame),
+                            "errors": [str(err) for err in errs],
+                        }
+                        for frame, errs in sorted(export_summary["limit_frames"].items())
+                    ],
                 },
             })
+
+            for frame, violations in export_summary["speed_frames"].items():
+                scene_speed_frames.setdefault(int(frame), []).extend(list(violations))
+                for joint_idx, vel in violations:
+                    scene_speed_entries.append({
+                        "robot_id": robot_id,
+                        "frame": int(frame),
+                        "joint": int(joint_idx + 1),
+                        "deg_s": float(vel),
+                    })
+            for frame, errors in export_summary["limit_frames"].items():
+                scene_limit_frames.setdefault(int(frame), []).extend([str(e) for e in errors])
+                scene_limit_entries.append({
+                    "robot_id": robot_id,
+                    "frame": int(frame),
+                    "errors": [str(e) for e in errors],
+                })
 
         if not metadata_robots:
             self.report({'ERROR'}, "Scene export failed: no robot slots were exported")
@@ -1481,8 +1551,30 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
         if first_csv_export_path:
             context.scene.xarm_last_export_path = first_csv_export_path
 
+        if scene_speed_frames or scene_limit_frames:
+            add_violation_markers(context, scene_speed_frames, scene_limit_frames)
+            XARM_OT_ExportReport._report_data = {
+                "filepath": os.path.basename(metadata_path),
+                "num_frames": (end_frame - start_frame + 1),
+                "fps": fps,
+                "max_speed_pct": max(
+                    [float(r.get("validation", {}).get("peak_speed_percent", 0.0)) for r in metadata_robots] or [0.0]
+                ),
+                "speed_frames": scene_speed_frames,
+                "limit_frames": scene_limit_frames,
+                "speed_warning_entries": scene_speed_entries,
+                "joint_limit_entries": scene_limit_entries,
+                "has_warnings": bool(scene_speed_frames),
+                "has_errors": bool(scene_limit_frames),
+            }
+            bpy.ops.xarm.export_report('INVOKE_DEFAULT')
+
         if skipped:
             self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, {len(skipped)} skipped)")
+        elif scene_limit_frames:
+            self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, with {len(scene_limit_entries)} limit violations)")
+        elif scene_speed_frames:
+            self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, with {len(scene_speed_entries)} speed warnings)")
         else:
             self.report({'INFO'}, f"Scene bundle exported ({len(metadata_robots)} robots)")
 
