@@ -8,6 +8,8 @@ Converts blender/scripts/setup_animation_rig.py into operator with UI parameters
 import bpy
 import math
 
+WIDGET_WIRE_WIDTH = 4.0
+
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HELPER FUNCTIONS
@@ -102,6 +104,12 @@ def _cross(name):
     ]
     e = [(0,1), (2,3), (4,5), (6,7), (6,8), (9,10), (9,11), (12,13), (12,14)]
     return _make_widget(name, v, e)
+
+
+def _set_widget_wire_width(pose_bone, width: float = WIDGET_WIRE_WIDTH):
+    """Set custom-shape wire width when supported by Blender version."""
+    if hasattr(pose_bone, "custom_shape_wire_width"):
+        pose_bone.custom_shape_wire_width = width
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -748,6 +756,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             pb.custom_shape = _circle(f'WGT_joint_{i}_fk', axis=ring_axes[i-1])
             pb.use_custom_shape_bone_size = False
             pb.custom_shape_scale_xyz = (s, s, s)
+            _set_widget_wire_width(pb)
             pb.color.palette = 'THEME04'  # Blue
 
         # IK bones J1-J2: green rings (for hybrid mode manual rotation)
@@ -756,6 +765,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
             pb.custom_shape = _circle(f'WGT_joint_{i}_ik', axis=ring_axes[i-1])
             pb.use_custom_shape_bone_size = False
             pb.custom_shape_scale_xyz = (s, s, s)
+            _set_widget_wire_width(pb)
             pb.color.palette = 'THEME03'  # Green
 
         # IK bones J3-J6: no widget (controlled by IK solver)
@@ -767,6 +777,7 @@ class XARM_OT_SetupRig(bpy.types.Operator):
         tcp_pb.custom_shape = _cross('WGT_tcp')
         tcp_pb.use_custom_shape_bone_size = False
         tcp_pb.custom_shape_scale_xyz = (s * 1.5, s * 1.5, s * 1.5)
+        _set_widget_wire_width(tcp_pb)
         tcp_pb.color.palette = 'THEME09'  # Orange
 
         # DEF bones: no widget (hidden)
@@ -926,6 +937,7 @@ class XARM_OT_RefreshWidgets(bpy.types.Operator):
                     pb.custom_shape_scale_xyz = (widget_scale, widget_scale, widget_scale)
                     pb.color.palette = 'THEME04'  # Blue
                     refreshed_count += 1
+                _set_widget_wire_width(pb)
 
         # IK manual bones: green rings (joint_1_ik, joint_2_ik)
         for i in range(1, 3):
@@ -938,6 +950,7 @@ class XARM_OT_RefreshWidgets(bpy.types.Operator):
                     pb.custom_shape_scale_xyz = (widget_scale, widget_scale, widget_scale)
                     pb.color.palette = 'THEME03'  # Green
                     refreshed_count += 1
+                _set_widget_wire_width(pb)
 
         # TCP: orange cross
         if 'tcp' in pbones:
@@ -949,6 +962,7 @@ class XARM_OT_RefreshWidgets(bpy.types.Operator):
                 tcp_pb.custom_shape_scale_xyz = (tcp_scale, tcp_scale, tcp_scale)
                 tcp_pb.color.palette = 'THEME09'  # Orange
                 refreshed_count += 1
+            _set_widget_wire_width(tcp_pb)
 
         if refreshed_count > 0:
             self.report({'INFO'}, f"Refreshed {refreshed_count} control widgets")
