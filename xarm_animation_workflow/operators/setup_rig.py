@@ -1126,7 +1126,7 @@ class XARM_OT_ApplyToolLength(bpy.types.Operator):
                 bpy.ops.object.mode_set(mode='EDIT')
 
                 edit_bones = arm_obj.data.edit_bones
-                for suffix in ('', '_fk', '_ik'):
+                for suffix in ('_fk', '_ik'):
                     bone_name = f'joint_6{suffix}'
                     bone = edit_bones.get(bone_name)
                     if bone is None:
