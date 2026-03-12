@@ -245,7 +245,13 @@ def xarm_mode_update_callback(armature_obj, context):
     except Exception as e:
         print(f"[xArm] Failed to update TCP parent mode: {e}")
 
-    # 4. Force viewport redraw
+    # 4. Disable follow mode when switching to FK (follow requires IK)
+    if mode == 0 and hasattr(armature_obj, 'xarm_follow_enabled') and armature_obj.xarm_follow_enabled:
+        _remove_follow_constraints(armature_obj)
+        armature_obj["xarm_follow_enabled"] = 0  # Use custom prop to avoid callback recursion
+        print("[xArm] Follow mode disabled (switched to FK)")
+
+    # 5. Force viewport redraw
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
             area.tag_redraw()
@@ -278,6 +284,108 @@ def xarm_ik_rotation_update_callback(armature_obj, context):
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
             area.tag_redraw()
+
+
+
+# ─────────────────────────────────────────────
+# FOLLOW MODE (Leader/Follower TCP Constraints)
+# ─────────────────────────────────────────────
+
+_FOLLOW_COPY_LOC = "TCP Follow Location"
+_FOLLOW_COPY_ROT = "TCP Follow Rotation"
+
+
+def _remove_follow_constraints(armature_obj):
+    """Remove follow mode constraints from TCP bone."""
+    tcp_bone = armature_obj.pose.bones.get("tcp")
+    if tcp_bone is None:
+        return
+    for name in (_FOLLOW_COPY_LOC, _FOLLOW_COPY_ROT):
+        con = tcp_bone.constraints.get(name)
+        if con:
+            tcp_bone.constraints.remove(con)
+            print(f"[xArm] Removed constraint '{name}' from tcp")
+
+
+def _apply_follow_constraints(follower_obj, leader_obj):
+    """Add Copy Location + Copy Rotation constraints to follower TCP targeting leader TCP."""
+    tcp_bone = follower_obj.pose.bones.get("tcp")
+    if tcp_bone is None:
+        print("[xArm] Follow mode: tcp bone not found on follower")
+        return False
+
+    leader_tcp = leader_obj.pose.bones.get("tcp")
+    if leader_tcp is None:
+        print("[xArm] Follow mode: tcp bone not found on leader")
+        return False
+
+    # Remove existing follow constraints first (idempotent)
+    _remove_follow_constraints(follower_obj)
+
+    # Copy Location: all axes, world space
+    loc_con = tcp_bone.constraints.new('COPY_LOCATION')
+    loc_con.name = _FOLLOW_COPY_LOC
+    loc_con.target = leader_obj
+    loc_con.subtarget = "tcp"
+    loc_con.owner_space = 'WORLD'
+    loc_con.target_space = 'WORLD'
+    loc_con.influence = 1.0
+    print(f"[xArm] Follow: added Copy Location (world) -> {leader_obj.name}/tcp")
+
+    # Copy Rotation: invert X, local space
+    rot_con = tcp_bone.constraints.new('COPY_ROTATION')
+    rot_con.name = _FOLLOW_COPY_ROT
+    rot_con.target = leader_obj
+    rot_con.subtarget = "tcp"
+    rot_con.owner_space = 'LOCAL'
+    rot_con.target_space = 'LOCAL'
+    rot_con.invert_x = True
+    rot_con.invert_y = False
+    rot_con.invert_z = False
+    rot_con.influence = 1.0
+    print(f"[xArm] Follow: added Copy Rotation (local, invert X) -> {leader_obj.name}/tcp")
+
+    return True
+
+
+def xarm_follow_update_callback(armature_obj, context):
+    """Called when xarm_follow_enabled changes. Adds or removes follow constraints."""
+    if not hasattr(armature_obj, 'xarm_follow_enabled'):
+        return
+
+    if armature_obj.xarm_follow_enabled:
+        leader = armature_obj.xarm_follow_leader
+        if leader is None:
+            print("[xArm] Follow mode: no leader selected, disabling")
+            _remove_follow_constraints(armature_obj)
+            return
+
+        if leader == armature_obj:
+            print("[xArm] Follow mode: can't follow self, disabling")
+            _remove_follow_constraints(armature_obj)
+            return
+
+        # Ensure follower is in IK mode (follow only works with IK)
+        current_mode = int(armature_obj.xarm_mode) if hasattr(armature_obj, 'xarm_mode') else 0
+        if current_mode == 0:
+            print("[xArm] Follow mode: switching follower to IK mode (required for follow)")
+            armature_obj.xarm_mode = '1'
+
+        # Ensure leader is also in IK mode (TCP must be standalone target)
+        leader_mode = int(leader.xarm_mode) if hasattr(leader, 'xarm_mode') else 0
+        if leader_mode == 0:
+            print("[xArm] Follow mode: switching leader to IK mode (TCP must be standalone)")
+            leader.xarm_mode = '1'
+
+        _apply_follow_constraints(armature_obj, leader)
+    else:
+        _remove_follow_constraints(armature_obj)
+
+    # Force viewport redraw
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
+
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -971,4 +1079,68 @@ class XARM_OT_RefreshWidgets(bpy.types.Operator):
             self.report({'INFO'}, "All widgets are already present")
             print(f"[xArm] All widgets already present on '{arm.name}'")
 
+        return {'FINISHED'}
+
+
+class XARM_OT_ApplyToolLength(bpy.types.Operator):
+    """Apply tool length to all xArm animation rigs in the scene (modifies joint_6 bone length)"""
+    bl_idname = "xarm.apply_tool_length"
+    bl_label = "Apply Tool Length"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # Base joint_6 length in Blender units (meters). 30mm = 0.03m
+    _BASE_J6_LENGTH_M = 0.03
+
+    def execute(self, context):
+        scene = context.scene
+        tool_mm = scene.xarm_tool_length_mm
+        # Total length in meters: 30mm base + tool length
+        total_length_m = self._BASE_J6_LENGTH_M + (tool_mm / 1000.0)
+
+        # Find animation rigs only (have FK/IK chains from Setup Rig).
+        # Excludes raw asset/sim rigs like uf850_twin which lack _fk/_ik bones.
+        xarm_armatures = [
+            obj for obj in scene.objects
+            if (obj.type == 'ARMATURE'
+                and obj.get("xarm_robot_type") is not None
+                and obj.data.bones.get("joint_6_fk") is not None)
+        ]
+
+        if not xarm_armatures:
+            self.report({'WARNING'}, "No xArm animation rigs found in scene")
+            return {'CANCELLED'}
+
+        area_3d = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
+        if area_3d is None:
+            self.report({'ERROR'}, "No 3D Viewport visible")
+            return {'CANCELLED'}
+        region = next((r for r in area_3d.regions if r.type == 'WINDOW'), None)
+
+        modified_count = 0
+        for arm_obj in xarm_armatures:
+            # Must be active object to enter edit mode
+            context.view_layer.objects.active = arm_obj
+            arm_obj.select_set(True)
+
+            with context.temp_override(area=area_3d, region=region):
+                bpy.ops.object.mode_set(mode='EDIT')
+
+                edit_bones = arm_obj.data.edit_bones
+                for suffix in ('', '_fk', '_ik'):
+                    bone_name = f'joint_6{suffix}'
+                    bone = edit_bones.get(bone_name)
+                    if bone is None:
+                        continue
+
+                    # Extend tail along the bone's local axis (head->tail direction)
+                    direction = (bone.tail - bone.head).normalized()
+                    bone.tail = bone.head + direction * total_length_m
+
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+            arm_obj.select_set(False)
+            modified_count += 1
+            print(f"[xArm] Tool length: {arm_obj.name} joint_6 set to {total_length_m*1000:.1f}mm")
+
+        self.report({'INFO'}, f"Applied tool length ({tool_mm:.0f}mm) to {modified_count} rigs")
         return {'FINISHED'}

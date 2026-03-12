@@ -38,7 +38,8 @@ class XARM_PT_SingleExport(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 1
+    bl_order = 3
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -62,6 +63,7 @@ class XARM_PT_Validation(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
     bl_order = 2
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -98,7 +100,8 @@ class XARM_PT_SceneExport(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 3
+    bl_order = 4
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -158,7 +161,8 @@ class XARM_PT_Playback(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 4
+    bl_order = 6
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -213,6 +217,7 @@ class XARM_PT_CollisionExport(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
     bl_order = 5
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout

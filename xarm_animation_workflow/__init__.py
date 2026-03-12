@@ -75,6 +75,7 @@ OPERATOR_CLASSES = (
     setup_rig.XARM_OT_ResetTCP,
     setup_rig.XARM_OT_ClearAllTransforms,
     setup_rig.XARM_OT_RefreshWidgets,
+    setup_rig.XARM_OT_ApplyToolLength,
     export_operators.XARM_OT_AddSceneRobotSlot,
     export_operators.XARM_OT_RemoveSceneRobotSlot,
     export_operators.XARM_OT_SelectSceneExportDir,
@@ -93,11 +94,12 @@ OPERATOR_CLASSES = (
 
 PANEL_CLASSES = (
     rig_panel.XARM_PT_RigSetup,
-    export_panel.XARM_PT_SingleExport,
+    rig_panel.XARM_PT_RigControl,
     export_panel.XARM_PT_Validation,
+    export_panel.XARM_PT_SingleExport,
     export_panel.XARM_PT_SceneExport,
-    export_panel.XARM_PT_Playback,
     export_panel.XARM_PT_CollisionExport,
+    export_panel.XARM_PT_Playback,
 )
 
 
@@ -152,6 +154,15 @@ def register():
         default=0.16,
         min=0.01,
         max=1.0
+    )
+
+    # Tool length offset in mm (added to 30mm base joint_6 length)
+    bpy.types.Scene.xarm_tool_length_mm = bpy.props.FloatProperty(
+        name="Tool Length (mm)",
+        description="Tool length offset in mm. Joint 6 bone length = 30mm + this value",
+        default=0.0,
+        min=0.0,
+        max=500.0,
     )
 
     # Armature reference (set after rig creation)
@@ -305,6 +316,21 @@ def register():
         update=setup_rig.xarm_ik_rotation_update_callback
     )
 
+    # Follow mode: leader/follower TCP constraint pairing
+    bpy.types.Object.xarm_follow_enabled = bpy.props.BoolProperty(
+        name="Follow Mode",
+        description="When enabled, this robot's TCP follows the leader robot's TCP",
+        default=False,
+        update=setup_rig.xarm_follow_update_callback
+    )
+
+    bpy.types.Object.xarm_follow_leader = bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name="Leader Robot",
+        description="Leader robot armature whose TCP this robot will follow",
+        poll=setup_rig.xarm_rig_poll
+    )
+
     # ── Register operators ──────────
     for cls in OPERATOR_CLASSES:
         _safe_register_class(cls)
@@ -342,10 +368,13 @@ def unregister():
     _safe_del_attr(bpy.types.Scene, "xarm_playback_loops")
     _safe_del_attr(bpy.types.Scene, "xarm_playback_mode")
     _safe_del_attr(bpy.types.Scene, "xarm_robot_ip")
+    _safe_del_attr(bpy.types.Object, "xarm_follow_leader")
+    _safe_del_attr(bpy.types.Object, "xarm_follow_enabled")
     _safe_del_attr(bpy.types.Object, "xarm_ik_track_rotation")
     _safe_del_attr(bpy.types.Object, "xarm_mode")
     _safe_del_attr(bpy.types.Scene, "xarm_active_collection")
     _safe_del_attr(bpy.types.Scene, "xarm_rig_armature")
+    _safe_del_attr(bpy.types.Scene, "xarm_tool_length_mm")
     _safe_del_attr(bpy.types.Scene, "xarm_widget_scale")
     _safe_del_attr(bpy.types.Scene, "xarm_ik_chain_default")
     _safe_del_attr(bpy.types.Scene, "xarm_default_mode")
