@@ -22,6 +22,7 @@ from .setup_rig import get_armature_from_collection
 
 COLLISION_DEFAULT_COLLECTION = "collision"
 COLLISION_FIXED_LINK_NAME = "new_link"
+DEFAULT_TCP_SPEED_LIMIT_MM_S = 1000.0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -64,6 +65,11 @@ class XARM_OT_ExportReport(bpy.types.Operator):
         if max_speed > 0:
             box = layout.box()
             box.label(text=f"Peak Speed: {max_speed:.1f}% of max (180 deg/s)", icon='SORTTIME')
+        max_tcp_speed = float(data.get("max_tcp_speed_mm_s", 0.0) or 0.0)
+        tcp_limit = float(data.get("tcp_speed_limit_mm_s", DEFAULT_TCP_SPEED_LIMIT_MM_S) or DEFAULT_TCP_SPEED_LIMIT_MM_S)
+        if max_tcp_speed > 0.0:
+            box = layout.box()
+            box.label(text=f"Peak TCP Speed: {max_tcp_speed:.1f} mm/s (limit {tcp_limit:.1f})", icon='ORIENTATION_GLOBAL')
 
         # Speed violations
         speed_frames = data.get('speed_frames', {})
@@ -96,6 +102,30 @@ class XARM_OT_ExportReport(bpy.types.Operator):
 
             # Tip
             box.label(text="Tip: Markers added to timeline at violation frames", icon='MARKER')
+
+        # TCP speed violations
+        tcp_speed_entries = data.get("tcp_speed_entries", [])
+        tcp_speed_frames = data.get("tcp_speed_frames", {})
+        if tcp_speed_entries:
+            box = layout.box()
+            box.label(text=f"TCP Speed Violations ({len(tcp_speed_entries)} entries)", icon='ERROR')
+            col = box.column(align=True)
+            for entry in tcp_speed_entries[:20]:
+                robot_id = str(entry.get("robot_id", "robot"))
+                frame = int(entry.get("frame", -1))
+                mm_s = float(entry.get("mm_s", 0.0))
+                col.label(text=f"Robot {robot_id}, F{frame}: {mm_s:.1f} mm/s")
+            if len(tcp_speed_entries) > 20:
+                col.label(text=f"... and {len(tcp_speed_entries) - 20} more entries")
+            box.label(text="Tip: Markers added to timeline at TCP violation frames", icon='MARKER')
+        elif tcp_speed_frames:
+            box = layout.box()
+            box.label(text=f"TCP Speed Violations ({len(tcp_speed_frames)} frames)", icon='ERROR')
+            col = box.column(align=True)
+            for frame, mm_s in sorted(tcp_speed_frames.items())[:10]:
+                col.label(text=f"Frame {int(frame)}: {float(mm_s):.1f} mm/s")
+            if len(tcp_speed_frames) > 10:
+                col.label(text=f"... and {len(tcp_speed_frames) - 10} more frames")
 
         # Joint limit violations
         limit_frames = data.get('limit_frames', {})
@@ -146,13 +176,20 @@ def clear_xarm_markers(context) -> int:
     return count
 
 
-def add_violation_markers(context, speed_frames: Dict[int, List], limit_frames: Dict[int, List], clear_existing: bool = True):
+def add_violation_markers(
+    context,
+    speed_frames: Dict[int, List],
+    limit_frames: Dict[int, List],
+    tcp_speed_frames: Optional[Dict[int, float]] = None,
+    clear_existing: bool = True,
+):
     """Add timeline markers at frames with violations.
 
     Args:
         context: Blender context
         speed_frames: Dict of frame -> [(joint_idx, velocity), ...]
         limit_frames: Dict of frame -> [error_msg, ...]
+        tcp_speed_frames: Dict of frame -> tcp_speed_mm_s
         clear_existing: Remove existing xarm markers first
     """
     # Clear existing xarm markers
@@ -161,18 +198,168 @@ def add_violation_markers(context, speed_frames: Dict[int, List], limit_frames: 
 
     scene = context.scene
 
-    # Add speed violation markers (yellow/orange)
+    tcp_speed_frames = tcp_speed_frames or {}
+
+    # Add speed violation markers
     for frame in speed_frames:
         scene.timeline_markers.new(f"xarm_speed_{frame}", frame=frame)
 
-    # Add limit violation markers (named differently)
+    # Add TCP speed violation markers
+    for frame in tcp_speed_frames:
+        if frame not in speed_frames:
+            scene.timeline_markers.new(f"xarm_tcp_{frame}", frame=frame)
+
+    # Add joint-limit violation markers
     for frame in limit_frames:
-        if frame not in speed_frames:  # Don't duplicate
+        if frame not in speed_frames and frame not in tcp_speed_frames:
             scene.timeline_markers.new(f"xarm_limit_{frame}", frame=frame)
 
-    total = len(speed_frames) + len(set(limit_frames) - set(speed_frames))
+    total = len(set(speed_frames) | set(tcp_speed_frames) | set(limit_frames))
     if total > 0:
         print(f"[INFO] Added {total} violation markers to timeline")
+
+
+def _tcp_world_position_m(armature: bpy.types.Object) -> Optional[Tuple[float, float, float]]:
+    """Get TCP world position in meters from pose bone."""
+    tcp_bone = armature.pose.bones.get("tcp")
+    if tcp_bone is None:
+        return None
+    world_m = armature.matrix_world @ tcp_bone.matrix
+    loc = world_m.to_translation()
+    return float(loc.x), float(loc.y), float(loc.z)
+
+
+def _analyze_armature_action(
+    armature: bpy.types.Object,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    max_speed_pct: float,
+    warning_threshold: float,
+    tcp_speed_limit_mm_s: float,
+    csv_filepath: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Analyze animation for joint-limit, joint-speed, and TCP-speed violations.
+
+    If csv_filepath is provided, writes CSV during the same evaluation pass.
+    """
+    if not armature.animation_data or not armature.animation_data.action:
+        raise ValueError(f"Armature '{armature.name}' has no active action")
+
+    robot_type = armature.get("xarm_robot_type", "uf850_twin")
+    config = XArmRigConfig(robot_type)
+    extractor = BoneAngleExtractor(armature.name, config)
+    speed_calc = SpeedCalculator(
+        max_velocity_deg_s=config.max_velocity_deg_s,
+        fps=fps,
+        max_speed_override=max_speed_pct,
+    )
+    exporter = CSVExporter(csv_filepath, include_tcp=False) if csv_filepath else None
+
+    speed_frames: Dict[int, List] = {}
+    limit_frames: Dict[int, List] = {}
+    tcp_speed_frames: Dict[int, float] = {}
+    speed_warning_entries: List[Dict[str, Any]] = []
+    joint_limit_entries: List[Dict[str, Any]] = []
+    tcp_speed_entries: List[Dict[str, Any]] = []
+
+    prev_angles = None
+    prev_tcp_pos_m = None
+    max_observed_speed_pct = 0.0
+    max_observed_tcp_speed_mm_s = 0.0
+    frame_dt = max(1e-6, 1.0 / float(fps))
+
+    for frame in range(start_frame, end_frame + 1):
+        angles = extractor.get_joint_angles(frame)
+        tcp_pos_m = _tcp_world_position_m(armature)
+
+        is_valid, errors = extractor.validate_limits(angles, frame)
+        if not is_valid:
+            limit_frames[frame] = [str(e) for e in errors]
+            joint_limit_entries.append({
+                "frame": int(frame),
+                "errors": [str(e) for e in errors],
+            })
+
+        if prev_angles is None:
+            speed_pct = 0.0
+            velocities = [0.0] * 6
+        else:
+            speed_pct, velocities = speed_calc.calculate_speed(prev_angles, angles)
+            actual_pct = (max(velocities) / config.max_velocity_deg_s) * 100.0
+            max_observed_speed_pct = max(max_observed_speed_pct, actual_pct)
+
+            threshold_vel = config.max_velocity_deg_s * warning_threshold
+            violations = []
+            for j, vel in enumerate(velocities):
+                if vel > threshold_vel:
+                    violations.append((j, vel))
+                    speed_warning_entries.append({
+                        "frame": int(frame),
+                        "joint": int(j + 1),
+                        "deg_s": float(vel),
+                    })
+            if violations:
+                speed_frames[frame] = violations
+
+            if prev_tcp_pos_m is not None and tcp_pos_m is not None:
+                dx = float(tcp_pos_m[0] - prev_tcp_pos_m[0])
+                dy = float(tcp_pos_m[1] - prev_tcp_pos_m[1])
+                dz = float(tcp_pos_m[2] - prev_tcp_pos_m[2])
+                dist_m = math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+                tcp_speed_mm_s = (dist_m * 1000.0) / frame_dt
+                max_observed_tcp_speed_mm_s = max(max_observed_tcp_speed_mm_s, tcp_speed_mm_s)
+                if tcp_speed_limit_mm_s > 0.0 and tcp_speed_mm_s > (tcp_speed_limit_mm_s + 1e-6):
+                    tcp_speed_frames[frame] = float(tcp_speed_mm_s)
+                    tcp_speed_entries.append({
+                        "frame": int(frame),
+                        "mm_s": float(tcp_speed_mm_s),
+                    })
+
+        if exporter:
+            time_s = (frame - start_frame) / fps
+            exporter.add_frame(frame, time_s, angles, speed_pct)
+
+        prev_angles = angles
+        prev_tcp_pos_m = tcp_pos_m
+
+    if exporter:
+        exporter.write()
+
+    return {
+        "num_frames": end_frame - start_frame + 1,
+        "speed_frames": speed_frames,
+        "limit_frames": limit_frames,
+        "tcp_speed_frames": tcp_speed_frames,
+        "max_speed_pct": max_observed_speed_pct,
+        "max_tcp_speed_mm_s": max_observed_tcp_speed_mm_s,
+        "tcp_speed_limit_mm_s": float(tcp_speed_limit_mm_s),
+        "speed_warning_entries": speed_warning_entries,
+        "joint_limit_entries": joint_limit_entries,
+        "tcp_speed_entries": tcp_speed_entries,
+        "action_name": armature.animation_data.action.name,
+        "robot_type": robot_type,
+    }
+
+
+def _report_data_from_summary(filepath_label: str, fps: float, summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize validation summary into popup report data schema."""
+    return {
+        "filepath": filepath_label,
+        "num_frames": int(summary.get("num_frames", 0)),
+        "fps": float(fps),
+        "max_speed_pct": float(summary.get("max_speed_pct", 0.0)),
+        "speed_frames": dict(summary.get("speed_frames", {})),
+        "limit_frames": dict(summary.get("limit_frames", {})),
+        "tcp_speed_frames": dict(summary.get("tcp_speed_frames", {})),
+        "speed_warning_entries": list(summary.get("speed_warning_entries", [])),
+        "joint_limit_entries": list(summary.get("joint_limit_entries", [])),
+        "tcp_speed_entries": list(summary.get("tcp_speed_entries", [])),
+        "max_tcp_speed_mm_s": float(summary.get("max_tcp_speed_mm_s", 0.0)),
+        "tcp_speed_limit_mm_s": float(summary.get("tcp_speed_limit_mm_s", DEFAULT_TCP_SPEED_LIMIT_MM_S)),
+        "has_warnings": bool(summary.get("speed_frames")) or bool(summary.get("tcp_speed_frames")),
+        "has_errors": bool(summary.get("limit_frames")),
+    }
 
 
 def _sanitize_name(name: str, fallback: str = "scene_export") -> str:
@@ -212,65 +399,19 @@ def _export_armature_action_to_csv(
     fps: float,
     max_speed_pct: float,
     warning_threshold: float,
+    tcp_speed_limit_mm_s: float,
 ) -> Dict[str, Any]:
     """Export currently active armature action to CSV and return summary."""
-    if not armature.animation_data or not armature.animation_data.action:
-        raise ValueError(f"Armature '{armature.name}' has no active action")
-
-    robot_type = armature.get("xarm_robot_type", "uf850_twin")
-    config = XArmRigConfig(robot_type)
-
-    extractor = BoneAngleExtractor(armature.name, config)
-    speed_calc = SpeedCalculator(
-        max_velocity_deg_s=config.max_velocity_deg_s,
+    return _analyze_armature_action(
+        armature=armature,
+        start_frame=start_frame,
+        end_frame=end_frame,
         fps=fps,
-        max_speed_override=max_speed_pct,
+        max_speed_pct=max_speed_pct,
+        warning_threshold=warning_threshold,
+        tcp_speed_limit_mm_s=tcp_speed_limit_mm_s,
+        csv_filepath=filepath,
     )
-    exporter = CSVExporter(filepath, include_tcp=False)
-
-    speed_frames: Dict[int, List] = {}
-    limit_frames: Dict[int, List] = {}
-    prev_angles = None
-    max_observed_speed_pct = 0.0
-
-    for frame in range(start_frame, end_frame + 1):
-        angles = extractor.get_joint_angles(frame)
-
-        is_valid, errors = extractor.validate_limits(angles, frame)
-        if not is_valid:
-            limit_frames[frame] = errors
-
-        if prev_angles is None:
-            speed_pct = 0.0
-            velocities = [0.0] * 6
-        else:
-            speed_pct, velocities = speed_calc.calculate_speed(prev_angles, angles)
-
-            actual_pct = (max(velocities) / config.max_velocity_deg_s) * 100.0
-            max_observed_speed_pct = max(max_observed_speed_pct, actual_pct)
-
-            threshold_vel = config.max_velocity_deg_s * warning_threshold
-            violations = []
-            for j, vel in enumerate(velocities):
-                if vel > threshold_vel:
-                    violations.append((j, vel))
-            if violations:
-                speed_frames[frame] = violations
-
-        time_s = (frame - start_frame) / fps
-        exporter.add_frame(frame, time_s, angles, speed_pct)
-        prev_angles = angles
-
-    exporter.write()
-
-    return {
-        "num_frames": end_frame - start_frame + 1,
-        "speed_frames": speed_frames,
-        "limit_frames": limit_frames,
-        "max_speed_pct": max_observed_speed_pct,
-        "action_name": armature.animation_data.action.name,
-        "robot_type": robot_type,
-    }
 
 
 def _bake_armature_action_to_csv(
@@ -282,6 +423,7 @@ def _bake_armature_action_to_csv(
     fps: float,
     max_speed_pct: float,
     warning_threshold: float,
+    tcp_speed_limit_mm_s: float,
 ) -> Dict[str, Any]:
     """Bake source armature action to a temp rig, then export baked result to CSV."""
     baked_armature = None
@@ -339,6 +481,7 @@ def _bake_armature_action_to_csv(
             fps=fps,
             max_speed_pct=max_speed_pct,
             warning_threshold=warning_threshold,
+            tcp_speed_limit_mm_s=tcp_speed_limit_mm_s,
         )
         if source_action_name:
             summary["action_name"] = source_action_name
@@ -838,6 +981,84 @@ class XARM_OT_ClearMarkers(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XARM_OT_ValidateAnimation(bpy.types.Operator):
+    """Validate current active action on current timeline range and add markers."""
+    bl_idname = "xarm.validate_animation"
+    bl_label = "Validate Animation"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        arm = get_armature_from_collection(context.scene.xarm_active_collection)
+        return arm is not None
+
+    def execute(self, context):
+        scene = context.scene
+        armature = get_armature_from_collection(scene.xarm_active_collection)
+        if not armature:
+            self.report({'ERROR'}, "No armature found in selected rig collection")
+            return {'CANCELLED'}
+        if not armature.animation_data or not armature.animation_data.action:
+            self.report({'ERROR'}, "No active action on armature")
+            return {'CANCELLED'}
+
+        start_frame = int(scene.frame_start)
+        end_frame = int(scene.frame_end)
+        if start_frame > end_frame:
+            self.report({'ERROR'}, f"Invalid frame range: {start_frame} to {end_frame}")
+            return {'CANCELLED'}
+
+        fps = float(scene.render.fps)
+        warning_threshold = float(scene.xarm_speed_warning_threshold) / 100.0
+        tcp_speed_limit_mm_s = float(scene.xarm_tcp_speed_limit_mm_s)
+
+        try:
+            summary = _analyze_armature_action(
+                armature=armature,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                fps=fps,
+                max_speed_pct=100.0,
+                warning_threshold=warning_threshold,
+                tcp_speed_limit_mm_s=tcp_speed_limit_mm_s,
+                csv_filepath=None,
+            )
+        except Exception as e:
+            self.report({'ERROR'}, f"Validation failed: {e}")
+            return {'CANCELLED'}
+
+        speed_frames = summary.get("speed_frames", {})
+        limit_frames = summary.get("limit_frames", {})
+        tcp_speed_frames = summary.get("tcp_speed_frames", {})
+
+        if speed_frames or limit_frames or tcp_speed_frames:
+            add_violation_markers(
+                context,
+                speed_frames=speed_frames,
+                limit_frames=limit_frames,
+                tcp_speed_frames=tcp_speed_frames,
+            )
+        else:
+            clear_xarm_markers(context)
+
+        XARM_OT_ExportReport._report_data = _report_data_from_summary(
+            filepath_label=f"{armature.name} (validation only)",
+            fps=fps,
+            summary=summary,
+        )
+        bpy.ops.xarm.export_report('INVOKE_DEFAULT')
+
+        warn_count = len(speed_frames) + len(tcp_speed_frames)
+        err_count = len(limit_frames)
+        if err_count:
+            self.report({'WARNING'}, f"Validation found {err_count} limit errors and {warn_count} speed warnings")
+        elif warn_count:
+            self.report({'WARNING'}, f"Validation found {warn_count} speed warnings")
+        else:
+            self.report({'INFO'}, "Validation passed: no violations")
+        return {'FINISHED'}
+
+
 class XARM_OT_DirectExport(bpy.types.Operator):
     """Export animation to CSV without baking"""
     bl_idname = "xarm.direct_export"
@@ -967,15 +1188,21 @@ class XARM_OT_DirectExport(bpy.types.Operator):
             # Export frames - collect violations by frame
             speed_frames: Dict[int, List] = {}  # frame -> [(joint_idx, velocity), ...]
             limit_frames: Dict[int, List] = {}  # frame -> [error_msg, ...]
+            tcp_speed_frames: Dict[int, float] = {}  # frame -> tcp_speed_mm_s
             prev_angles = None
+            prev_tcp_pos_m = None
             max_speed_pct = 0.0  # Track peak speed
+            max_tcp_speed_mm_s = 0.0
 
             # Get warning threshold from scene (default 90%)
             warning_threshold = context.scene.get('xarm_speed_warning_threshold', 90.0) / 100.0
+            tcp_speed_limit_mm_s = float(context.scene.xarm_tcp_speed_limit_mm_s)
+            frame_dt = max(1e-6, 1.0 / float(self.fps))
 
             for frame in range(start_frame, end_frame + 1):
                 # Get joint angles
                 angles = extractor.get_joint_angles(frame)
+                tcp_pos_m = _tcp_world_position_m(armature)
 
                 # Validate limits
                 is_valid, errors = extractor.validate_limits(angles, frame)
@@ -1002,19 +1229,35 @@ class XARM_OT_DirectExport(bpy.types.Operator):
                     if violations:
                         speed_frames[frame] = violations
 
+                    if prev_tcp_pos_m is not None and tcp_pos_m is not None:
+                        dx = float(tcp_pos_m[0] - prev_tcp_pos_m[0])
+                        dy = float(tcp_pos_m[1] - prev_tcp_pos_m[1])
+                        dz = float(tcp_pos_m[2] - prev_tcp_pos_m[2])
+                        dist_m = math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+                        tcp_speed_mm_s = (dist_m * 1000.0) / frame_dt
+                        max_tcp_speed_mm_s = max(max_tcp_speed_mm_s, tcp_speed_mm_s)
+                        if tcp_speed_limit_mm_s > 0.0 and tcp_speed_mm_s > (tcp_speed_limit_mm_s + 1e-6):
+                            tcp_speed_frames[frame] = float(tcp_speed_mm_s)
+
                 # Add frame to export
                 time_s = (frame - start_frame) / self.fps
                 exporter.add_frame(frame, time_s, angles, speed_pct)
 
                 prev_angles = angles
+                prev_tcp_pos_m = tcp_pos_m
 
             # Write CSV
             exporter.write()
 
             # Add markers to timeline
             num_frames = end_frame - start_frame + 1
-            if speed_frames or limit_frames:
-                add_violation_markers(context, speed_frames, limit_frames)
+            if speed_frames or limit_frames or tcp_speed_frames:
+                add_violation_markers(
+                    context,
+                    speed_frames=speed_frames,
+                    limit_frames=limit_frames,
+                    tcp_speed_frames=tcp_speed_frames,
+                )
 
             # Prepare report data
             XARM_OT_ExportReport._report_data = {
@@ -1024,7 +1267,10 @@ class XARM_OT_DirectExport(bpy.types.Operator):
                 'max_speed_pct': max_speed_pct,
                 'speed_frames': speed_frames,
                 'limit_frames': limit_frames,
-                'has_warnings': bool(speed_frames),
+                'tcp_speed_frames': tcp_speed_frames,
+                'max_tcp_speed_mm_s': max_tcp_speed_mm_s,
+                'tcp_speed_limit_mm_s': tcp_speed_limit_mm_s,
+                'has_warnings': bool(speed_frames) or bool(tcp_speed_frames),
                 'has_errors': bool(limit_frames),
             }
 
@@ -1034,8 +1280,9 @@ class XARM_OT_DirectExport(bpy.types.Operator):
             if limit_frames:
                 self.report({'WARNING'}, f"{result_msg} (with {len(limit_frames)} limit violations)")
                 bpy.ops.xarm.export_report('INVOKE_DEFAULT')
-            elif speed_frames:
-                self.report({'WARNING'}, f"{result_msg} (with {len(speed_frames)} speed warnings)")
+            elif speed_frames or tcp_speed_frames:
+                warn_count = len(speed_frames) + len(tcp_speed_frames)
+                self.report({'WARNING'}, f"{result_msg} (with {warn_count} speed warnings)")
                 bpy.ops.xarm.export_report('INVOKE_DEFAULT')
             else:
                 # No issues - clear any existing markers
@@ -1243,15 +1490,21 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             # Export frames - collect violations by frame
             speed_frames: Dict[int, List] = {}  # frame -> [(joint_idx, velocity), ...]
             limit_frames: Dict[int, List] = {}  # frame -> [error_msg, ...]
+            tcp_speed_frames: Dict[int, float] = {}  # frame -> tcp_speed_mm_s
             prev_angles = None
+            prev_tcp_pos_m = None
             max_speed_pct = 0.0  # Track peak speed
+            max_tcp_speed_mm_s = 0.0
 
             # Get warning threshold from scene (default 90%)
             warning_threshold = context.scene.get('xarm_speed_warning_threshold', 90.0) / 100.0
+            tcp_speed_limit_mm_s = float(context.scene.xarm_tcp_speed_limit_mm_s)
+            frame_dt = max(1e-6, 1.0 / float(self.fps))
 
             for frame in range(start_frame, end_frame + 1):
                 # Get joint angles
                 angles = extractor.get_joint_angles(frame)
+                tcp_pos_m = _tcp_world_position_m(baked_armature)
 
                 # Validate limits
                 is_valid, errors = extractor.validate_limits(angles, frame)
@@ -1278,11 +1531,22 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
                     if violations:
                         speed_frames[frame] = violations
 
+                    if prev_tcp_pos_m is not None and tcp_pos_m is not None:
+                        dx = float(tcp_pos_m[0] - prev_tcp_pos_m[0])
+                        dy = float(tcp_pos_m[1] - prev_tcp_pos_m[1])
+                        dz = float(tcp_pos_m[2] - prev_tcp_pos_m[2])
+                        dist_m = math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+                        tcp_speed_mm_s = (dist_m * 1000.0) / frame_dt
+                        max_tcp_speed_mm_s = max(max_tcp_speed_mm_s, tcp_speed_mm_s)
+                        if tcp_speed_limit_mm_s > 0.0 and tcp_speed_mm_s > (tcp_speed_limit_mm_s + 1e-6):
+                            tcp_speed_frames[frame] = float(tcp_speed_mm_s)
+
                 # Add frame to export
                 time_s = (frame - start_frame) / self.fps
                 exporter.add_frame(frame, time_s, angles, speed_pct)
 
                 prev_angles = angles
+                prev_tcp_pos_m = tcp_pos_m
 
             # Write CSV
             exporter.write()
@@ -1297,8 +1561,13 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
 
             # Add markers to timeline
             num_frames = end_frame - start_frame + 1
-            if speed_frames or limit_frames:
-                add_violation_markers(context, speed_frames, limit_frames)
+            if speed_frames or limit_frames or tcp_speed_frames:
+                add_violation_markers(
+                    context,
+                    speed_frames=speed_frames,
+                    limit_frames=limit_frames,
+                    tcp_speed_frames=tcp_speed_frames,
+                )
 
             # Prepare report data
             XARM_OT_ExportReport._report_data = {
@@ -1308,7 +1577,10 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
                 'max_speed_pct': max_speed_pct,
                 'speed_frames': speed_frames,
                 'limit_frames': limit_frames,
-                'has_warnings': bool(speed_frames),
+                'tcp_speed_frames': tcp_speed_frames,
+                'max_tcp_speed_mm_s': max_tcp_speed_mm_s,
+                'tcp_speed_limit_mm_s': tcp_speed_limit_mm_s,
+                'has_warnings': bool(speed_frames) or bool(tcp_speed_frames),
                 'has_errors': bool(limit_frames),
             }
 
@@ -1318,8 +1590,9 @@ class XARM_OT_BakeAndExport(bpy.types.Operator):
             if limit_frames:
                 self.report({'WARNING'}, f"{result_msg} (with {len(limit_frames)} limit violations)")
                 bpy.ops.xarm.export_report('INVOKE_DEFAULT')
-            elif speed_frames:
-                self.report({'WARNING'}, f"{result_msg} (with {len(speed_frames)} speed warnings)")
+            elif speed_frames or tcp_speed_frames:
+                warn_count = len(speed_frames) + len(tcp_speed_frames)
+                self.report({'WARNING'}, f"{result_msg} (with {warn_count} speed warnings)")
                 bpy.ops.xarm.export_report('INVOKE_DEFAULT')
             else:
                 # No issues - clear any existing markers
@@ -1403,6 +1676,7 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
         # Scene export should preserve full measured speed percentage (no forced 50% cap).
         max_speed_pct = 100.0
         warning_threshold = scene.xarm_speed_warning_threshold / 100.0
+        tcp_speed_limit_mm_s = float(scene.xarm_tcp_speed_limit_mm_s)
 
         used_file_names: Set[str] = set()
         metadata_robots: List[Dict[str, Any]] = []
@@ -1410,8 +1684,10 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
         first_csv_export_path: Optional[str] = None
         scene_speed_frames: Dict[int, List] = {}
         scene_limit_frames: Dict[int, List] = {}
+        scene_tcp_speed_frames: Dict[int, float] = {}
         scene_speed_entries: List[Dict[str, Any]] = []
         scene_limit_entries: List[Dict[str, Any]] = []
+        scene_tcp_entries: List[Dict[str, Any]] = []
 
         for index, slot in enumerate(slots, start=1):
             robot_id = slot.robot_id.strip() or f"robot{index}"
@@ -1453,6 +1729,7 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                     fps=fps,
                     max_speed_pct=max_speed_pct,
                     warning_threshold=warning_threshold,
+                    tcp_speed_limit_mm_s=tcp_speed_limit_mm_s,
                 )
             except Exception as e:
                 skipped.append(f"{robot_id}: export failed ({e})")
@@ -1479,7 +1756,10 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                 "validation": {
                     "speed_warning_frames": len(export_summary["speed_frames"]),
                     "joint_limit_violation_frames": len(export_summary["limit_frames"]),
+                    "tcp_speed_warning_frames": len(export_summary.get("tcp_speed_frames", {})),
                     "peak_speed_percent": round(float(export_summary["max_speed_pct"]), 3),
+                    "peak_tcp_speed_mm_s": round(float(export_summary.get("max_tcp_speed_mm_s", 0.0)), 3),
+                    "tcp_speed_limit_mm_s": float(export_summary.get("tcp_speed_limit_mm_s", tcp_speed_limit_mm_s)),
                     "speed_warning_detail": [
                         {
                             "frame": int(frame),
@@ -1500,6 +1780,13 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                         }
                         for frame, errs in sorted(export_summary["limit_frames"].items())
                     ],
+                    "tcp_speed_warning_detail": [
+                        {
+                            "frame": int(frame),
+                            "mm_s": round(float(mm_s), 3),
+                        }
+                        for frame, mm_s in sorted(export_summary.get("tcp_speed_frames", {}).items())
+                    ],
                 },
             })
 
@@ -1518,6 +1805,14 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                     "robot_id": robot_id,
                     "frame": int(frame),
                     "errors": [str(e) for e in errors],
+                })
+            for frame, mm_s in export_summary.get("tcp_speed_frames", {}).items():
+                prev = scene_tcp_speed_frames.get(int(frame), 0.0)
+                scene_tcp_speed_frames[int(frame)] = max(float(prev), float(mm_s))
+                scene_tcp_entries.append({
+                    "robot_id": robot_id,
+                    "frame": int(frame),
+                    "mm_s": float(mm_s),
                 })
 
         if not metadata_robots:
@@ -1551,8 +1846,13 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
         if first_csv_export_path:
             context.scene.xarm_last_export_path = first_csv_export_path
 
-        if scene_speed_frames or scene_limit_frames:
-            add_violation_markers(context, scene_speed_frames, scene_limit_frames)
+        if scene_speed_frames or scene_limit_frames or scene_tcp_speed_frames:
+            add_violation_markers(
+                context,
+                speed_frames=scene_speed_frames,
+                limit_frames=scene_limit_frames,
+                tcp_speed_frames=scene_tcp_speed_frames,
+            )
             XARM_OT_ExportReport._report_data = {
                 "filepath": os.path.basename(metadata_path),
                 "num_frames": (end_frame - start_frame + 1),
@@ -1560,11 +1860,17 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
                 "max_speed_pct": max(
                     [float(r.get("validation", {}).get("peak_speed_percent", 0.0)) for r in metadata_robots] or [0.0]
                 ),
+                "max_tcp_speed_mm_s": max(
+                    [float(r.get("validation", {}).get("peak_tcp_speed_mm_s", 0.0)) for r in metadata_robots] or [0.0]
+                ),
+                "tcp_speed_limit_mm_s": float(tcp_speed_limit_mm_s),
                 "speed_frames": scene_speed_frames,
                 "limit_frames": scene_limit_frames,
+                "tcp_speed_frames": scene_tcp_speed_frames,
                 "speed_warning_entries": scene_speed_entries,
                 "joint_limit_entries": scene_limit_entries,
-                "has_warnings": bool(scene_speed_frames),
+                "tcp_speed_entries": scene_tcp_entries,
+                "has_warnings": bool(scene_speed_frames) or bool(scene_tcp_speed_frames),
                 "has_errors": bool(scene_limit_frames),
             }
             bpy.ops.xarm.export_report('INVOKE_DEFAULT')
@@ -1573,8 +1879,9 @@ class XARM_OT_ExportSceneBundle(bpy.types.Operator):
             self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, {len(skipped)} skipped)")
         elif scene_limit_frames:
             self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, with {len(scene_limit_entries)} limit violations)")
-        elif scene_speed_frames:
-            self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, with {len(scene_speed_entries)} speed warnings)")
+        elif scene_speed_frames or scene_tcp_speed_frames:
+            warn_count = len(scene_speed_entries) + len(scene_tcp_entries)
+            self.report({'WARNING'}, f"Scene bundle exported ({len(metadata_robots)} robots, with {warn_count} speed warnings)")
         else:
             self.report({'INFO'}, f"Scene bundle exported ({len(metadata_robots)} robots)")
 

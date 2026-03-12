@@ -28,16 +28,6 @@ def _draw_animation_source(layout, scene):
     else:
         col.label(text="Select rig collection to export", icon='INFO')
 
-    col.separator()
-    col.prop(scene.render, 'fps', text='FPS')
-    row = col.row(align=True)
-    row.prop(scene, 'frame_start', text='Start')
-    row.prop(scene, 'frame_end', text='End')
-
-    col.separator()
-    col.prop(scene, 'xarm_speed_warning_threshold', text='Speed Warn %')
-    col.label(text="(Max robot speed: 180 deg/s)", icon='INFO')
-
     return arm
 
 
@@ -59,12 +49,46 @@ class XARM_PT_SingleExport(bpy.types.Panel):
         layout.separator()
         col = layout.column(align=True)
         if arm and arm.name in bpy.data.objects:
-            col.operator('xarm.direct_export', text='Export CSV (No Bake)', icon='EXPORT')
             col.operator('xarm.bake_and_export', text='Bake & Export CSV', icon='RENDER_ANIMATION')
-            col.separator()
-            col.operator('xarm.clear_markers', text='Clear Violation Markers', icon='MARKER_HLT')
         else:
             col.label(text="Select rig collection to export", icon='INFO')
+
+
+class XARM_PT_Validation(bpy.types.Panel):
+    """Panel for timeline/action validation without export."""
+    bl_label = "Validation"
+    bl_idname = "XARM_PT_VALIDATION"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'xArm Animation'
+    bl_order = 2
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        arm = _draw_animation_source(layout, scene)
+
+        box = layout.box()
+        box.label(text="Validation Settings", icon='CHECKMARK')
+        col = box.column(align=True)
+        col.prop(scene.render, 'fps', text='FPS')
+        row = col.row(align=True)
+        row.prop(scene, 'frame_start', text='Start')
+        row.prop(scene, 'frame_end', text='End')
+        col.separator()
+        col.prop(scene, 'xarm_speed_warning_threshold', text='Joint Speed Warn %')
+        col.prop(scene, 'xarm_tcp_speed_limit_mm_s', text='TCP Limit (mm/s)')
+        col.label(text="Joint max reference: 180 deg/s", icon='INFO')
+        col.label(text="TCP limit reference: 0-1000 mm/s", icon='INFO')
+
+        layout.separator()
+        actions = layout.column(align=True)
+        if arm and arm.name in bpy.data.objects:
+            actions.operator('xarm.validate_animation', text='Validate Current Animation', icon='CHECKMARK')
+            actions.operator('xarm.clear_markers', text='Clear Violation Markers', icon='MARKER_HLT')
+        else:
+            actions.label(text="Select rig collection to validate", icon='INFO')
 
 
 class XARM_PT_SceneExport(bpy.types.Panel):
@@ -74,7 +98,7 @@ class XARM_PT_SceneExport(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 2
+    bl_order = 3
 
     def draw(self, context):
         layout = self.layout
@@ -134,7 +158,7 @@ class XARM_PT_Playback(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 3
+    bl_order = 4
 
     def draw(self, context):
         layout = self.layout
@@ -188,7 +212,7 @@ class XARM_PT_CollisionExport(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'xArm Animation'
-    bl_order = 4
+    bl_order = 5
 
     def draw(self, context):
         layout = self.layout
@@ -224,6 +248,7 @@ class XARM_PT_CollisionExport(bpy.types.Panel):
 
 def register():
     bpy.utils.register_class(XARM_PT_SingleExport)
+    bpy.utils.register_class(XARM_PT_Validation)
     bpy.utils.register_class(XARM_PT_SceneExport)
     bpy.utils.register_class(XARM_PT_Playback)
     bpy.utils.register_class(XARM_PT_CollisionExport)
@@ -233,4 +258,5 @@ def unregister():
     bpy.utils.unregister_class(XARM_PT_CollisionExport)
     bpy.utils.unregister_class(XARM_PT_Playback)
     bpy.utils.unregister_class(XARM_PT_SceneExport)
+    bpy.utils.unregister_class(XARM_PT_Validation)
     bpy.utils.unregister_class(XARM_PT_SingleExport)

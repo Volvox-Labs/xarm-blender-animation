@@ -20,13 +20,14 @@ Notes:
 
 ## Panels
 
-The addon provides five panels in `View3D > Sidebar > xArm Animation`:
+The addon provides six panels in `View3D > Sidebar > xArm Animation`:
 
 1. `Rig Setup & Control`
 2. `Single Export`
-3. `Scene Export`
-4. `Playback`
-5. `Collision Export`
+3. `Validation`
+4. `Scene Export`
+5. `Playback`
+6. `Collision Export`
 
 ## Workflow
 
@@ -49,13 +50,21 @@ TCP behavior on mode switch:
 - `Full IK` / `Hybrid`: TCP returns to standalone (constraint removed).
 
 ### 3. Single Export
-- **Export CSV (No Bake)**: direct export from current rig evaluation
 - **Bake & Export CSV**: visual-key bake, then export
 - Uses the armature's **active action** (no manual action picker in UI)
 
-Speed violations (>180 deg/s) show as timeline markers.
+### 4. Validation
+- Validate current active action over current timeline (`frame_start` to `frame_end`) without exporting.
+- Adds timeline markers for:
+  - joint speed warnings,
+  - TCP speed warnings,
+  - joint limit violations.
+- Uses:
+  - `Joint Speed Warn %` (based on max 180 deg/s)
+  - `TCP Limit (mm/s)` in range `0-1000`
+- Validation report popup lists detailed violation entries.
 
-### 4. Scene Export (Multi-Robot Bundle)
+### 5. Scene Export (Multi-Robot Bundle)
 Scene Export writes one folder with:
 1. `scene_metadata.json`
 2. `csv/*.csv` (one file per robot slot)
@@ -70,7 +79,7 @@ Current metadata keys:
 - Top-level: `scene_name`, `export_source`, `exported_at`, `output_folder`, `frame_range`, `fps`, `robots`, optional `skipped`
 - Per robot: `id`, `collection`, `armature`, `transform.rotateXYZ`, `transform.translate`, `animation.path`, `animation.length_frames`, `animation.fps`, `animation.action`, `validation.*`
 
-### 5. Play on Robot (Optional)
+### 6. Play on Robot (Optional)
 1. Set Robot IP, Mode, Loops
 2. Click **Select CSV**
 3. Click **Play CSV on Robot**
@@ -82,7 +91,7 @@ Current metadata keys:
 
 **Note**: Localhost (`127.0.0.1`) disables joint limit checks for simulation.
 
-### 6. Collision Export (URDF Bundle)
+### 7. Collision Export (URDF Bundle)
 Collision Export writes one folder with:
 1. `urdf/<urdf_name>.urdf`
 2. `submodels/floating_base/urdf/floatingbase.urdf`

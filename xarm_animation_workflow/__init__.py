@@ -83,6 +83,7 @@ OPERATOR_CLASSES = (
     export_operators.XARM_OT_ExportCollisionURDF,
     export_operators.XARM_OT_ExportReport,
     export_operators.XARM_OT_ClearMarkers,
+    export_operators.XARM_OT_ValidateAnimation,
     export_operators.XARM_OT_DirectExport,
     export_operators.XARM_OT_BakeAndExport,
     play_csv.XARM_OT_SelectCSV,
@@ -93,6 +94,7 @@ OPERATOR_CLASSES = (
 PANEL_CLASSES = (
     rig_panel.XARM_PT_RigSetup,
     export_panel.XARM_PT_SingleExport,
+    export_panel.XARM_PT_Validation,
     export_panel.XARM_PT_SceneExport,
     export_panel.XARM_PT_Playback,
     export_panel.XARM_PT_CollisionExport,
@@ -212,6 +214,13 @@ def register():
         max=100.0,
         subtype='PERCENTAGE'
     )
+    bpy.types.Scene.xarm_tcp_speed_limit_mm_s = bpy.props.FloatProperty(
+        name="TCP Speed Limit (mm/s)",
+        description="Warn when TCP speed exceeds this limit in mm/s (0-1000)",
+        default=1000.0,
+        min=0.0,
+        max=1000.0,
+    )
 
     # Scene export settings (multi-robot bundle)
     bpy.types.Scene.xarm_scene_export_name = bpy.props.StringProperty(
@@ -326,6 +335,7 @@ def unregister():
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_slots")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_dir")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_name")
+    _safe_del_attr(bpy.types.Scene, "xarm_tcp_speed_limit_mm_s")
     _safe_del_attr(bpy.types.Scene, "xarm_speed_warning_threshold")
     _safe_del_attr(bpy.types.Scene, "xarm_playback_csv_path")
     _safe_del_attr(bpy.types.Scene, "xarm_last_export_path")

@@ -6,7 +6,8 @@ Blender addon for UFactory robot animation workflow.
 
 - Rig Setup: create FK/IK animation rig from robot model
 - Mode Switching: Full FK, Full IK, or Hybrid control
-- Single Export: export animation to CSV (direct or baked) with speed validation
+- Single Export: baked CSV export for current active action
+- Validation: check joint speed / TCP speed / joint limits on current timeline and add markers
 - Scene Export: export multi-robot bundle (`scene_metadata.json` + `csv/*.csv`)
 - Collision Export: export collection meshes to URDF bundle (`urdf` + floating base + `meshes/stl`)
 - Robot Playback: play exported CSV directly on xArm hardware
@@ -31,10 +32,11 @@ Notes:
 
 1. Setup: open `blender/Ufactory850-ani-workflow.blend`, choose source collection, click `Setup Rig`.
 2. Animate: choose FK/IK/Hybrid mode and keyframe controls.
-3. Single Export: use `Export CSV (No Bake)` or `Bake & Export CSV`.
-4. Scene Export: add robot slots and run `Export Scene Bundle` (always baked per slot).
-5. Collision Export: select collision collection, set URDF name/path, export bundle.
-6. Playback: set robot IP, select CSV, play.
+3. Validation: set FPS/range/limits, click `Validate Current Animation`.
+4. Single Export: use `Bake & Export CSV`.
+5. Scene Export: add robot slots and run `Export Scene Bundle` (always baked per slot).
+6. Collision Export: select collision collection, set URDF name/path, export bundle.
+7. Playback: set robot IP, select CSV, play.
 
 ## Requirements
 
