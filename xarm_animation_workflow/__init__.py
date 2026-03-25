@@ -162,7 +162,7 @@ def register():
         description="Tool length offset in mm. Joint 6 bone length = 30mm + this value",
         default=0.0,
         min=0.0,
-        max=500.0,
+        max=1500.0,
     )
 
     # Armature reference (set after rig creation)
