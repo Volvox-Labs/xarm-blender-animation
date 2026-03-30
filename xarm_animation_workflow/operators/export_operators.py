@@ -11,6 +11,7 @@ import os
 import json
 import math
 import struct
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Tuple, List, Dict, Set, Optional, Any
@@ -389,6 +390,294 @@ def _get_transform_xyz(obj: bpy.types.Object) -> Tuple[List[float], List[float]]
         float(math.degrees(float(rot.z))),
     ]
     return translate, rotate_xyz
+
+
+def _canonical_robot_id(robot_id: str) -> str:
+    """Normalize ids like r1 / robot1 so placement matching is tolerant."""
+    text = re.sub(r'[^a-z0-9]+', '', (robot_id or "").strip().lower())
+    if not text:
+        return ""
+    match = re.fullmatch(r'(?:robot|r)(\d+)', text)
+    if match:
+        return f"r{int(match.group(1))}"
+    return text
+
+
+def _apply_transform_xyz(
+    obj: bpy.types.Object,
+    translate: List[float],
+    rotate_xyz: List[float],
+):
+    """Apply placement transform in world space using XYZ degrees."""
+    obj.location = (
+        float(translate[0]),
+        float(translate[1]),
+        float(translate[2]),
+    )
+    obj.rotation_mode = 'XYZ'
+    obj.rotation_euler = (
+        math.radians(float(rotate_xyz[0])),
+        math.radians(float(rotate_xyz[1])),
+        math.radians(float(rotate_xyz[2])),
+    )
+
+
+def _scene_slot_lookup(scene: bpy.types.Scene) -> Dict[str, Any]:
+    """Build lookup from normalized robot ids to scene export slots."""
+    lookup: Dict[str, Any] = {}
+    for index, slot in enumerate(scene.xarm_scene_export_slots, start=1):
+        slot_id = slot.robot_id.strip() or f"robot{index}"
+        canonical = _canonical_robot_id(slot_id)
+        if canonical and canonical not in lookup:
+            lookup[canonical] = slot
+    return lookup
+
+
+def _scene_slots_in_order(scene: bpy.types.Scene) -> List[Any]:
+    """Return scene slots in UI order."""
+    return [slot for slot in scene.xarm_scene_export_slots]
+
+
+class XARM_OT_ImportScenePlacement(bpy.types.Operator):
+    """Import robot placement JSON and apply transforms to mapped scene slots."""
+    bl_idname = "xarm.import_scene_placement"
+    bl_label = "Import Robot Placement"
+    bl_options = {'REGISTER'}
+
+    filepath: bpy.props.StringProperty(
+        name="Placement File",
+        description="Robot placement JSON file",
+        subtype='FILE_PATH',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.xarm_scene_export_slots) > 0
+
+    def invoke(self, context, event):
+        scene = context.scene
+        if scene.xarm_scene_placement_path:
+            self.filepath = scene.xarm_scene_placement_path
+        else:
+            default_name = _sanitize_name(scene.xarm_scene_export_name or scene.name, fallback="placements")
+            self.filepath = bpy.path.abspath(f"//{default_name}.json")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        scene = context.scene
+        filepath = bpy.path.abspath(self.filepath)
+        if not filepath:
+            self.report({'ERROR'}, "Select a placement JSON file")
+            return {'CANCELLED'}
+        if not os.path.isfile(filepath):
+            self.report({'ERROR'}, f"Placement file not found: {filepath}")
+            return {'CANCELLED'}
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            self.report({'ERROR'}, f"Failed to read placement file: {exc}")
+            return {'CANCELLED'}
+
+        robots = payload.get("robots")
+        if not isinstance(robots, dict) or not robots:
+            self.report({'ERROR'}, "Placement JSON has no robots object")
+            return {'CANCELLED'}
+
+        slot_lookup = _scene_slot_lookup(scene)
+        slots_in_order = _scene_slots_in_order(scene)
+        matched_slots: Set[int] = set()
+        applied: List[str] = []
+        skipped: List[str] = []
+        warnings: List[str] = []
+        fallback_count = 0
+
+        def _apply_robot_to_slot(robot_id: str, robot_data: Dict[str, Any], slot: Any) -> bool:
+            if not slot.collection:
+                skipped.append(f"{robot_id}: slot has no collection")
+                return False
+
+            armature = get_armature_from_collection(slot.collection)
+            if armature is None:
+                skipped.append(f"{robot_id}: no xArm rig in '{slot.collection.name}'")
+                return False
+
+            root_obj = _find_robot_root_object(slot.collection, armature)
+            translate = robot_data.get("translate")
+            rotate_xyz = robot_data.get("rotateXYZ")
+            if not isinstance(translate, list) or len(translate) != 3:
+                skipped.append(f"{robot_id}: invalid translate")
+                return False
+            if not isinstance(rotate_xyz, list) or len(rotate_xyz) != 3:
+                skipped.append(f"{robot_id}: invalid rotateXYZ")
+                return False
+
+            try:
+                _apply_transform_xyz(root_obj, translate, rotate_xyz)
+            except Exception as exc:
+                skipped.append(f"{robot_id}: apply failed ({exc})")
+                return False
+
+            applied.append(f"{robot_id} -> {slot.collection.name}")
+            return True
+
+        unmatched: List[Tuple[str, Dict[str, Any]]] = []
+
+        for robot_id, robot_data in robots.items():
+            canonical = _canonical_robot_id(str(robot_id))
+            slot = slot_lookup.get(canonical)
+            if slot is None:
+                unmatched.append((str(robot_id), robot_data))
+                continue
+            slot_index = slots_in_order.index(slot)
+            if _apply_robot_to_slot(str(robot_id), robot_data, slot):
+                matched_slots.add(slot_index)
+
+        for robot_id, robot_data in unmatched:
+            fallback_slot = None
+            for slot_index, slot in enumerate(slots_in_order):
+                if slot_index in matched_slots:
+                    continue
+                fallback_slot = slot
+                matched_slots.add(slot_index)
+                break
+            if fallback_slot is None:
+                skipped.append(f"{robot_id}: no remaining scene slot")
+                continue
+            fallback_count += 1
+            _apply_robot_to_slot(robot_id, robot_data, fallback_slot)
+
+        scene.xarm_scene_placement_path = filepath
+        if not applied:
+            self.report({'ERROR'}, "No robot placements were applied")
+            return {'CANCELLED'}
+
+        slot_count = len(slots_in_order)
+        robot_count = len(robots)
+        if robot_count != slot_count:
+            warnings.append(
+                f"Placement file has {robot_count} robots but scene has {slot_count} slots"
+            )
+        if robot_count < slot_count:
+            warnings.append("Only matching robots were updated; extra scene slots were left unchanged")
+        elif robot_count > slot_count:
+            warnings.append("Scene has fewer slots than placement file; some file robots were not applied")
+        if fallback_count:
+            warnings.append(f"{fallback_count} robot(s) were matched by slot order because ids did not match")
+
+        message = f"Imported {len(applied)} robot placements"
+        if skipped:
+            message += f" ({len(skipped)} skipped)"
+        self.report({'INFO'}, message)
+        for warning in warnings[:3]:
+            self.report({'WARNING'}, warning)
+            print(f"[xArm] Placement import warning: {warning}")
+        for entry in skipped[:8]:
+            print(f"[xArm] Placement import skipped: {entry}")
+        return {'FINISHED'}
+
+
+class XARM_OT_ExportScenePlacement(bpy.types.Operator):
+    """Export current scene slot transforms to robot placement JSON."""
+    bl_idname = "xarm.export_scene_placement"
+    bl_label = "Export Robot Placement"
+    bl_options = {'REGISTER'}
+
+    filepath: bpy.props.StringProperty(
+        name="Placement File",
+        description="Destination robot placement JSON file",
+        subtype='FILE_PATH',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.xarm_scene_export_slots) > 0
+
+    def invoke(self, context, event):
+        scene = context.scene
+        if scene.xarm_scene_placement_path:
+            self.filepath = scene.xarm_scene_placement_path
+        else:
+            default_name = _sanitize_name(scene.xarm_scene_export_name or scene.name, fallback="placements")
+            self.filepath = bpy.path.abspath(f"//{default_name}.json")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        scene = context.scene
+        filepath = bpy.path.abspath(self.filepath)
+        if not filepath:
+            self.report({'ERROR'}, "Select an export path")
+            return {'CANCELLED'}
+
+        root, ext = os.path.splitext(filepath)
+        if not ext:
+            filepath = f"{filepath}.json"
+        elif ext.lower() != ".json":
+            filepath = f"{root}.json"
+
+        folder = os.path.dirname(filepath)
+        if folder:
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except Exception as exc:
+                self.report({'ERROR'}, f"Failed to create export folder: {exc}")
+                return {'CANCELLED'}
+
+        robots: Dict[str, Dict[str, Any]] = {}
+        skipped: List[str] = []
+
+        for index, slot in enumerate(scene.xarm_scene_export_slots, start=1):
+            robot_id = slot.robot_id.strip() or f"r{index}"
+            if not slot.collection:
+                skipped.append(f"{robot_id}: no collection selected")
+                continue
+
+            armature = get_armature_from_collection(slot.collection)
+            if armature is None:
+                skipped.append(f"{robot_id}: no xArm rig in '{slot.collection.name}'")
+                continue
+
+            root_obj = _find_robot_root_object(slot.collection, armature)
+            translate, rotate_xyz = _get_transform_xyz(root_obj)
+            action_name = ""
+            if armature.animation_data and armature.animation_data.action:
+                action_name = armature.animation_data.action.name
+
+            robots[robot_id] = {
+                "translate": translate,
+                "rotateXYZ": rotate_xyz,
+                "animation": action_name,
+            }
+
+        if not robots:
+            self.report({'ERROR'}, "No robot placements available to export")
+            return {'CANCELLED'}
+
+        payload = {
+            "schema_version": 2,
+            "name": os.path.splitext(os.path.basename(filepath))[0],
+            "robots": robots,
+        }
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.write("\n")
+        except Exception as exc:
+            self.report({'ERROR'}, f"Failed to write placement file: {exc}")
+            return {'CANCELLED'}
+
+        scene.xarm_scene_placement_path = filepath
+        message = f"Exported {len(robots)} robot placements"
+        if skipped:
+            message += f" ({len(skipped)} skipped)"
+        self.report({'INFO'}, message)
+        for entry in skipped[:8]:
+            print(f"[xArm] Placement export skipped: {entry}")
+        return {'FINISHED'}
 
 
 def _export_armature_action_to_csv(

@@ -153,6 +153,17 @@ class XARM_PT_SceneExport(bpy.types.Panel):
         col.separator()
         col.operator('xarm.export_scene_bundle', text='Export Scene Bundle', icon='EXPORT')
 
+        placement_box = layout.box()
+        placement_box.label(text="Robot Placement", icon='EMPTY_AXIS')
+        placement_col = placement_box.column(align=True)
+        placement_col.prop(scene, 'xarm_scene_placement_path', text='JSON')
+        row = placement_col.row(align=True)
+        row.enabled = bool(scene.xarm_scene_export_slots)
+        row.operator('xarm.import_scene_placement', text='Import Placement', icon='IMPORT')
+        row.operator('xarm.export_scene_placement', text='Export Placement', icon='EXPORT')
+        if not scene.xarm_scene_export_slots:
+            placement_col.label(text="Add robot slots to map ids to collections", icon='INFO')
+
 
 class XARM_PT_Playback(bpy.types.Panel):
     """Panel for playing CSV on robot."""

@@ -79,6 +79,8 @@ OPERATOR_CLASSES = (
     export_operators.XARM_OT_AddSceneRobotSlot,
     export_operators.XARM_OT_RemoveSceneRobotSlot,
     export_operators.XARM_OT_SelectSceneExportDir,
+    export_operators.XARM_OT_ImportScenePlacement,
+    export_operators.XARM_OT_ExportScenePlacement,
     export_operators.XARM_OT_ExportSceneBundle,
     export_operators.XARM_OT_SelectCollisionExportDir,
     export_operators.XARM_OT_ExportCollisionURDF,
@@ -247,6 +249,13 @@ def register():
         subtype='DIR_PATH'
     )
 
+    bpy.types.Scene.xarm_scene_placement_path = bpy.props.StringProperty(
+        name="Scene Placement JSON",
+        description="Placement JSON used to import or export robot base transforms",
+        default="",
+        subtype='FILE_PATH'
+    )
+
     bpy.types.Scene.xarm_scene_export_slots = bpy.props.CollectionProperty(
         name="Scene Robot Slots",
         type=export_operators.XARM_PG_SceneRobotSlot
@@ -359,6 +368,7 @@ def unregister():
     _safe_del_attr(bpy.types.Scene, "xarm_collision_collection")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_active_slot")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_slots")
+    _safe_del_attr(bpy.types.Scene, "xarm_scene_placement_path")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_dir")
     _safe_del_attr(bpy.types.Scene, "xarm_scene_export_name")
     _safe_del_attr(bpy.types.Scene, "xarm_tcp_speed_limit_mm_s")
