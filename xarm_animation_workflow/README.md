@@ -4,19 +4,34 @@ Blender addon for **UFactory 850** robot animation: rig setup, single CSV export
 
 ## Installation
 
+Recommended user install:
+
+1. Download the latest release ZIP from GitHub Releases.
+2. In Blender, use `Preferences > Extensions > Install from Disk`.
+3. Select the downloaded ZIP and enable `xArm Animation Workflow`.
+4. Restart Blender if needed.
+
+Developer install:
+
 1. Copy addon folder:
    - Source: `<repo>\xarm_animation_workflow`
    - Destination: `%APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default\xarm_animation_workflow`
-2. Copy Python SDK folder for playback:
+2. Restart Blender.
+
+Playback SDK install:
+
+1. Copy Python SDK folder for playback:
    - Source: `<repo>\xarm`
    - Destination: `<BLENDER_ROOT>\5.0\python\lib\xarm`
    - Example `BLENDER_ROOT`: `D:\BlenderLauncher\daily\blender-5.0.1-stable+daily.a3db93c5b259`
-3. Restart Blender.
-4. Find panel: `3D View > Sidebar (N) > xArm Animation`
+2. Restart Blender.
+
+Find panel: `3D View > Sidebar (N) > xArm Animation`
 
 Notes:
-- Installation is folder-copy only for this workflow.
-- Do not install via pip, zip addon install, or extension package install.
+- GitHub Release ZIP install is the preferred user update path.
+- Folder-copy install is useful for development and local testing.
+- Do not install this project with pip.
 
 ## Panels
 
@@ -78,6 +93,12 @@ Notes:
 Current metadata keys:
 - Top-level: `scene_name`, `export_source`, `exported_at`, `output_folder`, `frame_range`, `fps`, `robots`, optional `skipped`
 - Per robot: `id`, `collection`, `armature`, `transform.rotateXYZ`, `transform.translate`, `animation.path`, `animation.length_frames`, `animation.fps`, `animation.action`, `validation.*`
+
+### 5b. Robot Placement JSON
+- Import/export placement JSON from the Scene Export panel.
+- Uses scene robot slots to map robot ids to rig collections.
+- `r1` and `robot1` style ids are treated as equivalent.
+- Partial imports are allowed; extra scene slots are left unchanged and a warning is shown.
 
 ### 6. Play on Robot (Optional)
 1. Set Robot IP, Mode, Loops

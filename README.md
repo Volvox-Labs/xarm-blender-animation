@@ -14,19 +14,34 @@ Blender addon for UFactory robot animation workflow.
 
 ## Installation
 
+Recommended user install:
+
+1. Download the latest release ZIP from GitHub Releases.
+2. In Blender, use `Preferences > Extensions > Install from Disk`.
+3. Select the downloaded ZIP and enable `xArm Animation Workflow`.
+4. Restart Blender if the sidebar panel does not appear.
+
+Developer install:
+
 1. Copy addon folder:
    - Source: `<repo>\xarm_animation_workflow`
    - Destination: `%APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default\xarm_animation_workflow`
-2. Copy Python SDK folder for playback:
+2. Restart Blender.
+
+Playback SDK install:
+
+1. Copy Python SDK folder for playback:
    - Source: `<repo>\xarm`
    - Destination: `<BLENDER_ROOT>\5.0\python\lib\xarm`
    - Example `BLENDER_ROOT`: `D:\BlenderLauncher\daily\blender-5.0.1-stable+daily.a3db93c5b259`
-3. Restart Blender.
-4. Open panel: `3D View > Sidebar (N) > xArm Animation`.
+2. Restart Blender.
+
+Open panel: `3D View > Sidebar (N) > xArm Animation`.
 
 Notes:
-- Installation is folder-copy only for this project.
-- Do not install via pip, zip addon install, or extension package install for this workflow.
+- GitHub Release ZIP install is the preferred user update path.
+- Folder-copy install is useful for development and local testing.
+- Do not install this project with pip.
 
 ## Quick Start
 

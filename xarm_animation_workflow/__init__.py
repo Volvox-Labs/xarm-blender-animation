@@ -10,10 +10,10 @@ import bpy
 
 bl_info = {
     "name": "xArm Animation Workflow",
-    "author": "Generated from standalone scripts",
+    "author": "Wenyi",
     "description": "Complete xArm robot animation workflow: rig, export, playback",
     "blender": (5, 0, 1),
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "category": "3D View",
     "location": "View3D > Sidebar > xArm Animation",
     "warning": "",

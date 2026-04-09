@@ -4,9 +4,9 @@ schema_version = "1.0.0"
 
 id = "xarm_animation_workflow"
 name = "xArm Animation Workflow"
-version = "1.0.0"
 tagline = "Complete xArm robot animation workflow"
-maintainer = "Generated from standalone scripts"
+version = "1.1.0"
+maintainer = "Wenyi"
 type = "add-on"
 
 # Supported Blender version
