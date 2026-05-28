@@ -403,6 +403,23 @@ def _canonical_robot_id(robot_id: str) -> str:
     return text
 
 
+def _scene_robot_id_from_slot(robot_id: str, fallback_index: int) -> str:
+    """Derive Motion Core scene_robot_id (e.g. '1', '2') from a slot's robot_id.
+
+    Accepts ids in the form 'r1' / 'R1' / 'robot1' / '1' / '12' (case-insensitive,
+    optional 'r' or 'robot' prefix). Returns the trailing digits.
+
+    For non-numeric robot ids (e.g. 'left_arm') the slot's 1-based index is used
+    so the exported placement file is always self-consistent and Motion Core can
+    still resolve via positional matching.
+    """
+    text = (robot_id or "").strip()
+    match = re.fullmatch(r'(?:r|robot)?(\d+)', text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return str(int(fallback_index))
+
+
 def _apply_transform_xyz(
     obj: bpy.types.Object,
     translate: List[float],
@@ -642,14 +659,19 @@ class XARM_OT_ExportScenePlacement(bpy.types.Operator):
 
             root_obj = _find_robot_root_object(slot.collection, armature)
             translate, rotate_xyz = _get_transform_xyz(root_obj)
-            action_name = ""
-            if armature.animation_data and armature.animation_data.action:
-                action_name = armature.animation_data.action.name
+
+            # Motion Core's placement.animation field is the scene_robot_id
+            # that this mount plays (e.g. "1", "2"), NOT a Blender action name.
+            # Derive it from the slot's robot_id by stripping an optional
+            # 'r' / 'robot' prefix. Falls back to the slot index when the
+            # robot_id is non-numeric (e.g. 'left_arm') so the file stays
+            # self-consistent.
+            scene_robot_id = _scene_robot_id_from_slot(robot_id, index)
 
             robots[robot_id] = {
                 "translate": translate,
                 "rotateXYZ": rotate_xyz,
-                "animation": action_name,
+                "animation": scene_robot_id,
             }
 
         if not robots:
