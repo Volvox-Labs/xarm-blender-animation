@@ -64,6 +64,18 @@ TCP behavior on mode switch:
 - `Full FK`: TCP gets a `Copy Transforms` constraint to `joint_6_fk` with `head_tail=1.0` (follows FK wrist tail).
 - `Full IK` / `Hybrid`: TCP returns to standalone (constraint removed).
 
+Final FK tuning:
+- In `Full IK` or `Hybrid`, click **Bake IK/Hybrid to FK** under Rig Control.
+- The add-on evaluates every scene frame, creates a new `<source>_FK_BAKED`
+  action on the same robot rig, and switches that rig to `Full FK`.
+- The source IK/Hybrid action is preserved. The new action keys only the six
+  blue FK joint controls and can be refined in the Graph Editor.
+- `Editable FK` is the default. It preserves authored timing, extrema, and
+  holds, then removes redundant joint keys with a `0.15 deg` error tolerance
+  and a maximum six-frame gap. The resulting Blender curves are evaluated
+  again and any frame outside tolerance is restored.
+- `Exact FK` retains one FK key on every scene frame.
+
 ### 3. Single Export
 - **Bake & Export CSV**: visual-key bake, then export
 - Uses the armature's **active action** (no manual action picker in UI)

@@ -6,6 +6,16 @@ All notable changes to the xArm Animation Workflow add-on are tracked here.
 
 - Placement export now writes the scene robot ID (e.g. `"1"`, `"2"`) into the `animation` field instead of the Blender action name. This matches the format Motion Core expects for runtime-to-scene-robot mapping. Old presets written by previous exporter versions (containing Blender action names like `uf850_ani.01Action`) are auto-resolved by Motion Core's preset-key fallback but produce a warning; re-export to clean them up.
 
+## 1.2.0 - 2026-07-23
+
+- Added `Bake IK/Hybrid to FK`. It samples the evaluated robot joints over the
+  scene frame range, preserves the source action, creates a new editable FK
+  action on the same robot rig, and switches the rig to Full FK.
+- FK baking now defaults to adaptive editable keys: authored timing, extrema,
+  and holds are retained; redundant frames are removed within a configurable
+  joint error tolerance and maximum frame gap; final FK curves are verified.
+- Removed the experimental buffered CSV output.
+
 ## 1.1.0 - 2026-04-09
 
 - Added robot placement JSON import/export in the Scene Export panel.

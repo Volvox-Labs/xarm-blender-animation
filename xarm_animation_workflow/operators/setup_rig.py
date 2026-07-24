@@ -8,6 +8,14 @@ Converts blender/scripts/setup_animation_rig.py into operator with UI parameters
 import bpy
 import math
 
+from ..core.bone_utils import BoneAngleExtractor
+from ..core.fk_bake import (
+    nearest_equivalent_angle_deg,
+    parse_rotation_axis,
+    select_adaptive_keyframes,
+)
+from ..core.robot_config import XArmRigConfig
+
 WIDGET_WIRE_WIDTH = 4.0
 
 
@@ -999,6 +1007,408 @@ class XARM_OT_ClearAllTransforms(bpy.types.Operator):
         self.report({'INFO'}, f"Cleared transforms from {cleared_count} bones")
         print(f"[xArm] Cleared transforms from {cleared_count} control bones")
         return {'FINISHED'}
+
+
+def _capture_visual_joint_samples(context, armature, config, start_frame, end_frame):
+    """Visual-bake a temporary rig and return evaluated joint angles per frame."""
+
+    area_3d = next(
+        (area for area in context.screen.areas if area.type == 'VIEW_3D'),
+        None,
+    )
+    if area_3d is None:
+        raise RuntimeError("No 3D Viewport visible. Open one and retry.")
+    region = next(
+        (candidate for candidate in area_3d.regions if candidate.type == 'WINDOW'),
+        None,
+    )
+    if region is None:
+        raise RuntimeError("No 3D Viewport window region is available")
+
+    temporary_armature = None
+    temporary_action = None
+    temporary_data = None
+    original_active = context.view_layer.objects.active
+    original_selected = list(context.selected_objects)
+    original_object_mode = original_active.mode if original_active else 'OBJECT'
+
+    try:
+        if original_active and original_object_mode != 'OBJECT':
+            with context.temp_override(area=area_3d, region=region):
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+        temporary_armature = armature.copy()
+        temporary_data = armature.data.copy()
+        temporary_armature.data = temporary_data
+        temporary_armature.name = f"{armature.name}_FK_CAPTURE_TEMP"
+        temporary_data.name = f"{armature.data.name}_FK_CAPTURE_TEMP"
+        target_collection = (
+            armature.users_collection[0]
+            if armature.users_collection
+            else context.collection
+        )
+        target_collection.objects.link(temporary_armature)
+
+        if not temporary_armature.animation_data:
+            temporary_armature.animation_data_create()
+        temporary_armature.animation_data.action = armature.animation_data.action
+
+        for obj in context.view_layer.objects:
+            obj.select_set(False)
+        temporary_armature.select_set(True)
+        context.view_layer.objects.active = temporary_armature
+
+        with context.temp_override(area=area_3d, region=region):
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            bpy.ops.nla.bake(
+                frame_start=start_frame,
+                frame_end=end_frame,
+                only_selected=False,
+                visual_keying=True,
+                clear_constraints=True,
+                clear_parents=False,
+                use_current_action=False,
+                bake_types={'POSE'},
+            )
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        temporary_action = temporary_armature.animation_data.action
+        extractor = BoneAngleExtractor(temporary_armature.name, config)
+        return [
+            (frame, extractor.get_joint_angles(frame))
+            for frame in range(start_frame, end_frame + 1)
+        ]
+    finally:
+        if temporary_armature and temporary_armature.name in bpy.data.objects:
+            if (
+                context.view_layer.objects.active == temporary_armature
+                and temporary_armature.mode != 'OBJECT'
+            ):
+                try:
+                    with context.temp_override(area=area_3d, region=region):
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                except Exception:
+                    pass
+            bpy.data.objects.remove(temporary_armature, do_unlink=True)
+
+        if (
+            temporary_action
+            and temporary_action != armature.animation_data.action
+            and temporary_action.name in bpy.data.actions
+        ):
+            bpy.data.actions.remove(temporary_action)
+        if (
+            temporary_data
+            and temporary_data.users == 0
+            and temporary_data.name in bpy.data.armatures
+        ):
+            bpy.data.armatures.remove(temporary_data)
+
+        for obj in context.view_layer.objects:
+            obj.select_set(False)
+        for obj in original_selected:
+            if obj.name in bpy.data.objects:
+                obj.select_set(True)
+        if original_active and original_active.name in bpy.data.objects:
+            context.view_layer.objects.active = original_active
+            if original_object_mode != 'OBJECT':
+                try:
+                    with context.temp_override(area=area_3d, region=region):
+                        bpy.ops.object.mode_set(mode=original_object_mode)
+                except Exception:
+                    pass
+
+
+def _action_key_frames(action, start_frame, end_frame):
+    """Collect authored integer key times from legacy and layered Actions."""
+
+    fcurves = []
+    seen_fcurves = set()
+
+    def add_fcurves(curves):
+        for fcurve in curves or ():
+            pointer = fcurve.as_pointer()
+            if pointer not in seen_fcurves:
+                seen_fcurves.add(pointer)
+                fcurves.append(fcurve)
+
+    add_fcurves(getattr(action, "fcurves", ()))
+    for layer in getattr(action, "layers", ()):
+        for strip in getattr(layer, "strips", ()):
+            for channelbag in getattr(strip, "channelbags", ()):
+                add_fcurves(getattr(channelbag, "fcurves", ()))
+            channelbag_for_slot = getattr(strip, "channelbag", None)
+            if channelbag_for_slot:
+                for slot in getattr(action, "slots", ()):
+                    try:
+                        channelbag = channelbag_for_slot(slot)
+                    except (RuntimeError, TypeError, ValueError):
+                        continue
+                    if channelbag:
+                        add_fcurves(getattr(channelbag, "fcurves", ()))
+
+    frames = set()
+    for fcurve in fcurves:
+        for point in fcurve.keyframe_points:
+            frame = int(round(float(point.co[0])))
+            if start_frame <= frame <= end_frame:
+                frames.add(frame)
+    return frames
+
+
+class XARM_OT_BakeToFK(bpy.types.Operator):
+    """Bake the evaluated IK or Hybrid result onto this rig's FK controls."""
+
+    bl_idname = "xarm.bake_to_fk"
+    bl_label = "Bake IK/Hybrid to FK"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    bake_mode: bpy.props.EnumProperty(
+        name="Bake Mode",
+        items=[
+            (
+                'EDITABLE',
+                "Editable FK",
+                "Reduce redundant keys while checking the FK result against every sampled frame",
+            ),
+            (
+                'EXACT',
+                "Exact FK",
+                "Keep one FK key on every scene frame",
+            ),
+        ],
+        default='EDITABLE',
+    )
+
+    key_tolerance_deg: bpy.props.FloatProperty(
+        name="Joint Error Tolerance (deg)",
+        description="Maximum allowed error per joint after FK key reduction",
+        default=0.15,
+        min=0.01,
+        max=2.0,
+        precision=3,
+    )
+
+    maximum_key_gap: bpy.props.IntProperty(
+        name="Maximum Key Gap",
+        description="Always retain enough keys that no interval exceeds this many frames",
+        default=6,
+        min=1,
+        max=48,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        armature = get_armature_from_collection(
+            getattr(context.scene, "xarm_active_collection", None)
+        )
+        return bool(
+            armature
+            and armature.animation_data
+            and armature.animation_data.action
+            and int(getattr(armature, "xarm_mode", "0")) in (1, 2)
+            and all(
+                armature.pose.bones.get(f"joint_{index}_fk") is not None
+                for index in range(1, 7)
+            )
+        )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "bake_mode", expand=True)
+        if self.bake_mode == 'EDITABLE':
+            box = layout.box()
+            box.prop(self, "key_tolerance_deg")
+            box.prop(self, "maximum_key_gap")
+            box.label(text="Every frame is still evaluated and verified.", icon='INFO')
+
+    def execute(self, context):
+        armature = get_armature_from_collection(context.scene.xarm_active_collection)
+        if armature is None:
+            self.report({'ERROR'}, "Select a collection containing an xArm animation rig")
+            return {'CANCELLED'}
+        if not armature.animation_data or not armature.animation_data.action:
+            self.report({'ERROR'}, "The selected rig has no active action")
+            return {'CANCELLED'}
+
+        original_mode = str(armature.xarm_mode)
+        if int(original_mode) not in (1, 2):
+            self.report({'ERROR'}, "Bake to FK requires Full IK or Hybrid mode")
+            return {'CANCELLED'}
+
+        source_action = armature.animation_data.action
+        scene = context.scene
+        start_frame = int(scene.frame_start)
+        end_frame = int(scene.frame_end)
+        original_frame = int(scene.frame_current)
+        original_subframe = float(scene.frame_subframe)
+        baked_action = None
+
+        try:
+            robot_type = armature.get("xarm_robot_type", "uf850_twin")
+            config = XArmRigConfig(robot_type)
+            authored_frames = _action_key_frames(
+                source_action,
+                start_frame,
+                end_frame,
+            )
+            missing = [
+                f"joint_{index}_fk"
+                for index in range(1, 7)
+                if armature.pose.bones.get(f"joint_{index}_fk") is None
+            ]
+            if missing:
+                raise ValueError(f"Missing FK control bones: {', '.join(missing)}")
+
+            # Capture the complete evaluated result before changing the active
+            # action or control mode. This also supports Hybrid and Follow rigs.
+            evaluated_samples = _capture_visual_joint_samples(
+                context,
+                armature,
+                config,
+                start_frame,
+                end_frame,
+            )
+
+            samples = []
+            previous_angles = [None] * 6
+            for frame, evaluated_angles in evaluated_samples:
+                continuous_angles = []
+                for joint_index, angle in enumerate(evaluated_angles):
+                    continuous = nearest_equivalent_angle_deg(
+                        angle,
+                        previous_angles[joint_index],
+                        config.joint_limits_deg[joint_index],
+                    )
+                    continuous_angles.append(continuous)
+                    previous_angles[joint_index] = continuous
+                samples.append((frame, continuous_angles))
+
+            samples_by_frame = dict(samples)
+            if self.bake_mode == 'EXACT':
+                selected_frames = {frame for frame, _angles in samples}
+            else:
+                selected_frames = set(
+                    select_adaptive_keyframes(
+                        samples,
+                        tolerance_deg=self.key_tolerance_deg,
+                        maximum_gap_frames=self.maximum_key_gap,
+                        mandatory_frames=authored_frames,
+                    )
+                )
+
+            # Keep the source action available after it no longer has an active
+            # user. The newly created action contains only editable FK curves.
+            source_action.use_fake_user = True
+            baked_action = bpy.data.actions.new(
+                name=f"{source_action.name}_FK_BAKED"
+            )
+            armature.animation_data.action = baked_action
+            armature.xarm_mode = '0'
+
+            fk_bones = []
+            axis_details = []
+            for joint_index, axis_spec in enumerate(config.rotation_axes, start=1):
+                fk_bone = armature.pose.bones[f"joint_{joint_index}_fk"]
+                fk_bone.rotation_mode = 'XYZ'
+                fk_bone.rotation_euler = (0.0, 0.0, 0.0)
+                fk_bones.append(fk_bone)
+                axis_details.append(parse_rotation_axis(axis_spec))
+
+            def insert_fk_frame(frame):
+                joint_angles = samples_by_frame[frame]
+                for fk_bone, (axis_index, axis_sign), angle in zip(
+                    fk_bones,
+                    axis_details,
+                    joint_angles,
+                ):
+                    fk_bone.rotation_euler[axis_index] = math.radians(
+                        angle * axis_sign
+                    )
+                    fk_bone.keyframe_insert(
+                        data_path="rotation_euler",
+                        index=axis_index,
+                        frame=frame,
+                        group=fk_bone.name,
+                    )
+
+            for frame in sorted(selected_frames):
+                insert_fk_frame(frame)
+
+            # Bezier handles can deviate from the linear reduction estimate.
+            # Evaluate the real FK curves and insert the worst missing frame
+            # until every sampled frame satisfies the requested tolerance.
+            if self.bake_mode == 'EDITABLE':
+                for _iteration in range(len(samples)):
+                    worst_frame = None
+                    worst_error = -1.0
+                    for frame, target_angles in samples:
+                        scene.frame_set(frame)
+                        frame_error = 0.0
+                        for (
+                            fk_bone,
+                            (axis_index, axis_sign),
+                            target_angle,
+                            limits,
+                        ) in zip(
+                            fk_bones,
+                            axis_details,
+                            target_angles,
+                            config.joint_limits_deg,
+                        ):
+                            evaluated_angle = math.degrees(
+                                fk_bone.rotation_euler[axis_index]
+                            ) * axis_sign
+                            evaluated_angle = nearest_equivalent_angle_deg(
+                                evaluated_angle,
+                                target_angle,
+                                limits,
+                            )
+                            frame_error = max(
+                                frame_error,
+                                abs(evaluated_angle - target_angle),
+                            )
+                        if frame_error > worst_error:
+                            worst_error = frame_error
+                            worst_frame = frame
+
+                    if worst_error <= self.key_tolerance_deg + 1e-6:
+                        break
+                    if worst_frame in selected_frames:
+                        raise RuntimeError(
+                            f"FK curve differs by {worst_error:.3f}° at a retained key"
+                        )
+                    selected_frames.add(worst_frame)
+                    insert_fk_frame(worst_frame)
+
+            scene.frame_set(original_frame, subframe=original_subframe)
+            context.view_layer.update()
+            self.report(
+                {'INFO'},
+                (
+                    f"Baked {len(selected_frames)} FK keys from {len(samples)} samples to "
+                    f"'{baked_action.name}' (source preserved)"
+                ),
+            )
+            print(
+                f"[xArm] FK bake: {source_action.name} -> {baked_action.name}, "
+                f"{len(selected_frames)}/{len(samples)} keyed frames, "
+                f"range {start_frame}-{end_frame}"
+            )
+            return {'FINISHED'}
+        except Exception as exc:
+            armature.animation_data.action = source_action
+            armature.xarm_mode = original_mode
+            scene.frame_set(original_frame, subframe=original_subframe)
+            if baked_action and baked_action.users == 0:
+                bpy.data.actions.remove(baked_action)
+            self.report({'ERROR'}, f"Bake to FK failed: {exc}")
+            print(f"[xArm] Bake to FK failed: {exc}")
+            return {'CANCELLED'}
 
 
 class XARM_OT_RefreshWidgets(bpy.types.Operator):

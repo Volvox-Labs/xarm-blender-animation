@@ -168,6 +168,19 @@ class XARM_PT_RigControl(bpy.types.Panel):
             box.label(text="Utilities", icon='TOOL_SETTINGS')
 
             col = box.column(align=True)
+            bake_row = col.row(align=True)
+            bake_row.enabled = bool(
+                arm.animation_data
+                and arm.animation_data.action
+                and int(arm.xarm_mode) in (1, 2)
+            )
+            bake_row.operator(
+                'xarm.bake_to_fk',
+                text='Bake IK/Hybrid to FK',
+                icon='ACTION',
+            )
+            col.label(text="Creates a new editable FK action", icon='INFO')
+            col.separator()
             col.operator('xarm.reset_tcp', text='Reset TCP to Home', icon='HOME')
             col.operator('xarm.clear_all_transforms', text='Clear All Transforms', icon='LOOP_BACK')
             col.separator()

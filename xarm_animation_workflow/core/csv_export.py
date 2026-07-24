@@ -133,7 +133,7 @@ class CSVExporter:
         self.rows.append(row)
 
     def write(self):
-        """Write buffered frames to CSV file."""
+        """Write collected animation frames to a CSV file."""
         if not self.rows:
             raise ValueError("No frames to export")
 
