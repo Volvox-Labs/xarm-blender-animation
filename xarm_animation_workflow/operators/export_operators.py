@@ -996,13 +996,105 @@ def _object_origin_xyz_rpy(obj: bpy.types.Object) -> Tuple[str, str]:
 
 
 def _is_box_like_object(obj: bpy.types.Object, depsgraph: bpy.types.Depsgraph) -> bool:
-    """Heuristic: object is a box primitive if evaluated mesh has 8 verts / 6 faces."""
+    """Heuristic for "should this object use a <box> collision primitive?"
+
+    Three passes, increasingly tolerant of mesh complexity but each one
+    catches a real-world shape category:
+
+      1. STRICT 8/6 — evaluated mesh is exactly 8 vertices / 6 polygons,
+         the signature of a default Blender cube. Catches the common case
+         instantly.
+      2. AABB-CORNER occupancy — at least 7 of the 8 axis-aligned bounding-
+         box corners have a vertex within 10% of the largest dimension.
+         A real box has all 8 corners populated; a beveled / loop-cut /
+         lightly-edited cube has them near-populated. A cylinder, sphere,
+         or organic shape leaves the corners empty (their verts cluster
+         on curved surfaces, not at the bbox extremes), so they correctly
+         fall through to mesh collision.
+      3. AABB-FILL — every vertex sits on at least one AABB face within
+         the same 10% tolerance. Adds protection against pathological
+         shapes that happen to brush the corners but have interior detail.
+    """
     obj_eval = obj.evaluated_get(depsgraph)
     mesh = obj_eval.to_mesh()
     try:
-        return len(mesh.vertices) == 8 and len(mesh.polygons) == 6
+        # Pass 1 — strict 8/6 (canonical Blender cube).
+        if len(mesh.vertices) == 8 and len(mesh.polygons) == 6:
+            return True
+        if len(mesh.vertices) < 8:
+            return False
+
+        xs = [v.co.x for v in mesh.vertices]
+        ys = [v.co.y for v in mesh.vertices]
+        zs = [v.co.z for v in mesh.vertices]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        min_z, max_z = min(zs), max(zs)
+        dx, dy, dz = max_x - min_x, max_y - min_y, max_z - min_z
+        if dx <= 1e-9 or dy <= 1e-9 or dz <= 1e-9:
+            return False
+
+        max_dim = max(dx, dy, dz)
+        corner_tol = max_dim * 0.10  # 10% of the largest dimension
+        corner_tol_sq = corner_tol * corner_tol
+
+        # Pass 2 — AABB-corner occupancy.
+        corners = [
+            (min_x, min_y, min_z), (max_x, min_y, min_z),
+            (min_x, max_y, min_z), (max_x, max_y, min_z),
+            (min_x, min_y, max_z), (max_x, min_y, max_z),
+            (min_x, max_y, max_z), (max_x, max_y, max_z),
+        ]
+        occupied = 0
+        for cx, cy, cz in corners:
+            for v in mesh.vertices:
+                d2 = (v.co.x - cx) ** 2 + (v.co.y - cy) ** 2 + (v.co.z - cz) ** 2
+                if d2 <= corner_tol_sq:
+                    occupied += 1
+                    break
+        if occupied < 7:
+            # Cylinders, spheres, organic shapes — leave at least 2 corners
+            # empty. Fall through to mesh collision.
+            return False
+
+        # Pass 3 — AABB-fill check. Even with corners occupied, reject if
+        # any vertex hangs in the interior (mid-volume detail).
+        tol_x = dx * 0.05
+        tol_y = dy * 0.05
+        tol_z = dz * 0.05
+        for v in mesh.vertices:
+            on_x = abs(v.co.x - min_x) <= tol_x or abs(v.co.x - max_x) <= tol_x
+            on_y = abs(v.co.y - min_y) <= tol_y or abs(v.co.y - max_y) <= tol_y
+            on_z = abs(v.co.z - min_z) <= tol_z or abs(v.co.z - max_z) <= tol_z
+            if not (on_x or on_y or on_z):
+                return False
+        return True
     finally:
         obj_eval.to_mesh_clear()
+
+
+def _resolve_collision_kind(obj: bpy.types.Object, auto_is_box: bool) -> str:
+    """Resolve the collision shape kind ('box' or 'mesh') for one object.
+
+    Auto-detection is overridden by a per-object Blender custom property
+    when the operator wants to force one mode for a specific object:
+
+        obj["collision_kind"] = "box"   # force box (cheap, axis-aligned)
+        obj["collision_kind"] = "mesh"  # force triangle-mesh collision
+
+    Values are case-insensitive; anything other than "box" / "mesh" is
+    ignored and auto-detection wins.
+    """
+    try:
+        raw = obj.get("collision_kind", "")
+    except Exception:
+        raw = ""
+    override = str(raw or "").strip().lower()
+    if override == "box":
+        return "box"
+    if override == "mesh":
+        return "mesh"
+    return "box" if auto_is_box else "mesh"
 
 
 def _object_box_size_xyz(obj: bpy.types.Object) -> str:
@@ -1208,24 +1300,41 @@ class XARM_OT_ExportCollisionURDF(bpy.types.Operator):
 
                 xyz, rpy = _object_origin_xyz_rpy(obj)
                 is_box = _is_box_like_object(obj, depsgraph)
+                collision_kind = _resolve_collision_kind(obj, auto_is_box=is_box)
                 collision_box_size = _object_box_size_xyz(obj)
-                if is_box:
-                    box_size = _object_box_size_xyz(obj)
-                    visual_kind = "box"
-                    collision_kind = "box"
-                    visual_rel_main = ""
-                    collision_rel_main = ""
-                    visual_rel_float = ""
-                    collision_rel_float = ""
-                else:
+
+                # Visual: box-like objects use a <box> primitive (cheap, no
+                # STL needed). Complex shapes export their STL and use a
+                # <mesh> visual.
+                # Collision: matches the auto-detected shape (box / mesh) so
+                # validators see what the renderer shows. Per-object override
+                # via `obj["collision_kind"]` lets the operator opt out per
+                # object (e.g. force box on a high-poly mesh for speed).
+                needs_stl = (not is_box) or (collision_kind == "mesh")
+                if needs_stl:
                     _export_object_stl(obj, mesh_abs, depsgraph)
+                    mesh_rel_main = os.path.relpath(mesh_abs, start=main_urdf_dir).replace("\\", "/")
+                    mesh_rel_float = os.path.relpath(mesh_abs, start=floating_urdf_dir).replace("\\", "/")
+                else:
+                    mesh_rel_main = ""
+                    mesh_rel_float = ""
+
+                if is_box:
+                    visual_kind = "box"
+                    box_size = _object_box_size_xyz(obj)
+                    visual_rel_main = ""
+                    visual_rel_float = ""
+                else:
                     visual_kind = "mesh"
-                    # Use box collisions for compatibility with strict URDF loaders.
-                    collision_kind = "box"
                     box_size = ""
-                    visual_rel_main = os.path.relpath(mesh_abs, start=main_urdf_dir).replace("\\", "/")
+                    visual_rel_main = mesh_rel_main
+                    visual_rel_float = mesh_rel_float
+
+                if collision_kind == "mesh":
+                    collision_rel_main = mesh_rel_main
+                    collision_rel_float = mesh_rel_float
+                else:
                     collision_rel_main = ""
-                    visual_rel_float = os.path.relpath(mesh_abs, start=floating_urdf_dir).replace("\\", "/")
                     collision_rel_float = ""
 
                 entry_name = _unique_name(
@@ -1271,9 +1380,16 @@ class XARM_OT_ExportCollisionURDF(bpy.types.Operator):
             return {'CANCELLED'}
 
         scene.xarm_collision_last_export_path = main_urdf_path
-        self.report({'INFO'}, f"Exported collision URDF bundle: {urdf_name} ({len(entries_main)} meshes)")
+        box_count = sum(1 for e in entries_main if e["collision_kind"] == "box")
+        mesh_count = sum(1 for e in entries_main if e["collision_kind"] == "mesh")
+        self.report(
+            {'INFO'},
+            f"Exported collision URDF bundle: {urdf_name} "
+            f"({len(entries_main)} objects — {box_count} box, {mesh_count} mesh)",
+        )
         print(f"[SUCCESS] Collision URDF exported: {main_urdf_path}")
         print(f"[INFO] Floating base URDF: {floating_urdf_path}")
+        print(f"[INFO] Collision shapes: {box_count} box + {mesh_count} mesh")
         return {'FINISHED'}
 
 
